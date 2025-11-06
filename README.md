@@ -4,42 +4,35 @@
 </p>
 
 <div align="center">
-  <a href="https://huggingface.co/stepfun-ai/Step-Audio-TTS-3B"><img src="https://img.shields.io/static/v1?label=Step-Audio-TTS-3B&message=HuggingFace&color=yellow"></a> &ensp;
+  <a href="https://arxiv.org/abs/2511.03601"><img src="https://img.shields.io/static/v1?label=Tech%20Report&message=Arxiv&color=red"></a> &ensp;
+  <a href="https://huggingface.co/stepfun-ai/Step-Audio-EditX"><img src="https://img.shields.io/static/v1?label=Step-Audio-EditX&message=HuggingFace&color=yellow"></a> &ensp;
+  <a href="https://huggingface.co/spaces/stepfun-ai/Step-Audio-EditX"><img src="https://img.shields.io/static/v1?label=Online%20Demo&message=HuggingFace&color=yellow"></a> &ensp;
 </div>
 
 ## 🔥🔥🔥 News!!
-* Feb 17, 2025: 👋 We release the technical report of [Step-Audio](https://arxiv.org/abs/2502.11946).
+* Nov 06, 2025: 👋 We release the technical report of [Step-Audio-EditX](https://arxiv.org/abs/2511.03601).
 
-## Table of Contents
+## Introduction
+We are open-sourcing Step-Audio-EditX, a powerful LLM-based audio model specialized in expressive and iterative audio editing. It excels at editing emotion, speaking style, and paralinguistics, and also features robust zero-shot text-to-speech (TTS) capabilities. 
 
-1. [Introduction](#1-introduction)
-2. [Model Summary](#2-model-summary)
-3. [Model Download](#3-model-download)
-4. [Model Usage](#4-model-usage)
-5. [Benchmark](#5-benchmark)
-6. [Online Engine](#6-online-engine)
-7. [Examples](#7-examples)
-8. [Acknowledgements](#8-acknowledgements)
-9. [License Agreement](#9-license-agreement)
-10. [Citation](#10-citation)
 
-## 1. Introduction
+## 📑 Open-source Plan
+- [ ] Inference Code
+- [ ] Online demo (Gradio)
+- [x] Model Checkpoints
+  - [x] Step-Audio-Tokenizer
+  - [ ] Step-Audio-EditX
+  - [ ] Step-Audio-EditX-Int8
 
-## 2. Model Summary
+## Model Download
 
-## 3. Model Download
-### 3.1 Huggingface
-| Models   | Links   |
-|-------|-------|
-| Step-Audio-EditX | [🤗huggingface](https://huggingface.co/stepfun-ai/Step-Audio-EditX) |
+| Models   | 🤗 Hugging Face | ModelScope |
+|-------|-------|-------|
+| Step-Audio-EditX | [stepfun-ai/Step-Audio-EditX](https://huggingface.co/stepfun-ai/Step-Audio-EditX) | [stepfun-ai/Step-Audio-EditX](https://modelscope.cn/models/stepfun-ai/Step-Audio-EditX) |
 
-### 3.2 Modelscope
-| Models   | Links   |
-|-------|-------|
-| Step-Audio-EditX | [modelscope](https://modelscope.cn/models/stepfun-ai/Step-Audio-EditX) |
 
-## 4. Model Usage
-### 📜 4.1  Requirements
+## Model Usage
+### 📜 Requirements
 The following table shows the requirements for running Step-Audio model (batch size = 1):
 
 |     Model    |  Setting<br/>(sample frequency) | GPU Minimum Memory  |
@@ -51,7 +44,7 @@ The following table shows the requirements for running Step-Audio model (batch s
   * **Recommended**: We recommend using 4xA800/H800 GPU with 80GB memory for better generation quality.
 * Tested operating system: Linux
 
-### 🔧 4.2 Dependencies and Installation
+### 🔧 Dependencies and Installation
 - Python >= 3.10.0 (Recommend to use [Anaconda](https://www.anaconda.com/download/#linux) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html))
 - [PyTorch >= 2.3-cu121](https://pytorch.org/)
 - [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads)
@@ -103,16 +96,7 @@ Assume you have 4 GPUs available and have already downloaded all the models.
 python app.py --model-path where_you_download_dir --model-source local 
 ```
 
-## 5. Benchmark
-
-## 6. Online Engine
-The online version of Step-Audio can be accessed from app version of [跃问](https://yuewen.cn), where some impressive examples can be found as well.
-
-<img src="./assets/yuewen.jpeg" width="200" alt="QR code">
-
-## 7. Examples
-
-## 8. Acknowledgements
+## Acknowledgements
 
 Part of the code for this project comes from:
 * [CosyVoice](https://github.com/FunAudioLLM/CosyVoice)
@@ -120,14 +104,25 @@ Part of the code for this project comes from:
 * [FunASR](https://github.com/modelscope/FunASR)
 
 Thank you to all the open-source projects for their contributions to this project!
-## 9. License Agreement
 
-+ The use of weights for Step Audio related models requires following license in [Step-Audio-Tokenizer](https://huggingface.co/stepfun-ai/Step-Audio-Tokenizer/tree/main) and [Step-Audio-EditX](https://huggingface.co/stepfun-ai/Step-Audio-EditX/tree/main)
-
+## License Agreement
 + The code in this open-source repository is licensed under the [Apache 2.0](LICENSE) License.
 
-## 10. Citation
+## Citation
+
+```
+@misc{yan2025stepaudioeditxtechnicalreport,
+      title={Step-Audio-EditX Technical Report}, 
+      author={Chao Yan and Boyong Wu and Peng Yang and Pengfei Tan and Guoqiang Hu and Yuxin Zhang and Xiangyu and Zhang and Fei Tian and Xuerui Yang and Xiangyu Zhang and Daxin Jiang and Gang Yu},
+      year={2025},
+      eprint={2511.03601},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2511.03601}, 
+}
+
+```
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=stepfun-ai/Step-Audio&type=Date)](https://star-history.com/#stepfun-ai/Step-Audio&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=stepfun-ai/Step-Audio-EditX&type=Date)](https://star-history.com/#stepfun-ai/Step-Audio-EditX&Date)
