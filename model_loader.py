@@ -104,7 +104,6 @@ class UnifiedModelLoader:
         modelscope_patterns = []
         return any(pattern in model_path for pattern in modelscope_patterns)
 
-    @spaces.GPU
     def load_transformers_model(
         self,
         model_path: str,
@@ -189,7 +188,6 @@ class UnifiedModelLoader:
             self.logger.error(f"Failed to load model from {source}: {e}")
             raise
 
-    @spaces.GPU
     def load_funasr_model(
         self,
         repo_path: str,
