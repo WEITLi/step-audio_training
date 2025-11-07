@@ -62,11 +62,10 @@ The following table shows the requirements for running Step-Audio model (batch s
 
 |     Model    |  Setting<br/>(sample frequency) | GPU Minimum Memory  |
 |------------|--------------------------------|----------------|
-| Step-Audio-EditX   |        41.6Hz          |       8GB        |
+| Step-Audio-EditX   |        41.6Hz          |       32 GB        |
 
 * An NVIDIA GPU with CUDA support is required.
-  * The model is tested on a four A800 80G GPU.
-  * **Recommended**: We recommend using 4xA800/H800 GPU with 80GB memory for better generation quality.
+  * The model is tested on a single L40S GPU.
 * Tested operating system: Linux
 
 ### 🔧 Dependencies and Installation
@@ -114,7 +113,7 @@ docker run --rm --gpus all \
 
 #### Launch Web Demo
 Start a local server for online inference.
-Assume you have 4 GPUs available and have already downloaded all the models.
+Assume you have one GPU with at least 32GB memory available and have already downloaded all the models.
 
 ```bash
 # Step-Audio-EditX demo
