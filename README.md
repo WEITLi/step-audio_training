@@ -226,10 +226,7 @@ python app.py --model-path where_you_download_dir --model-source local --quantiz
 python app.py --model-path where_you_download_dir --model-source local --quantization int4
 
 # Example with custom settings:
-python app.py --model-path where_you_download_dir --model-source local --torch-dtype float16
-
-# Enable audio transcription
---enable-auto-transcribe
+python app.py --model-path where_you_download_dir --model-source local --torch-dtype float16 --enable-auto-transcribe
 ```
 
 #### Local Inference Demo
