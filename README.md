@@ -11,6 +11,7 @@
 </div>
 
 ## 🔥🔥🔥 News!!
+* Nov 12, 2025: 📦 We release the **optimized inference code** and **model weights** of **Step-Audio-EditX** ([HuggingFace](https://huggingface.co/stepfun-ai/Step-Audio-EditX);  [ModelScope](https://modelscope.cn/models/stepfun-ai/Step-Audio-EditX)) and **Step-Audio-Tokenizer**([HuggingFace](https://huggingface.co/stepfun-ai/Step-Audio-Tokenizer);  [ModelScope](https://modelscope.cn/models/stepfun-ai/Step-Audio-Tokenizer))
 * Nov 07, 2025: ✨ [Demo Page](https://stepaudiollm.github.io/step-audio-editx/) ; 🎮  [HF Space Playground](https://huggingface.co/spaces/stepfun-ai/Step-Audio-EditX)
 * Nov 06, 2025: 👋 We release the technical report of [Step-Audio-EditX](https://arxiv.org/abs/2511.03601).
 
@@ -28,7 +29,11 @@ We are open-sourcing Step-Audio-EditX, a powerful **3B parameters** LLM-based au
 - [ ] Training Code
   - [ ] SFT training
   - [ ] PPO training
-
+- [ ] ⏳ Feature Support Plan
+  - [ ] Polyphone pronunciation control
+  - [ ] More paralinguistic tags ([Cough, Crying, Stress, etc.])
+  - [ ] Filler word removal
+  
 ## Features
 - **Zero-Shot TTS**
   - Excellent zero-shot TTS cloning for Mandarin, English, Sichuanese, and Cantonese.
