@@ -22,5 +22,5 @@ gradio>=5.16.0
 nvidia-cuda-nvrtc-cu12==12.8.93
 spaces==0.42.1
 matplotlib==3.10.7
-llmcompressor==0.7.0
+llmcompressor==0.8.1
 datasets==4.0.0

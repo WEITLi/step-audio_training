@@ -6,7 +6,6 @@ Performs AWQ quantization processing using llmcompressor
 Usage:
     python awq_quantize.py --model_path /path/to/model [other options]
 
-Author: Claude Code
 Dependencies: llmcompressor
 """
 
@@ -19,6 +18,13 @@ from typing import Optional, Dict
 from llmcompressor.modifiers.awq import AWQModifier
 from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
 from llmcompressor import oneshot
+from compressed_tensors.quantization import (
+    QuantizationArgs,
+    QuantizationScheme,
+    QuantizationStrategy,
+    QuantizationType,
+)
+from transformers import AutoModelForCausalLM
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 import torch
 from datasets import load_dataset
@@ -76,7 +82,7 @@ def get_awq_recipe(
     Returns:
         AWQ configuration list
     """
-    if ignore_layers is None:
+    if not ignore_layers:
         ignore_layers = [
             "lm_head",
             "embed_tokens",
@@ -87,22 +93,27 @@ def get_awq_recipe(
             "classifier"
         ]
     if not scheme:
+        # Create quantization arguments using compressed_tensors objects
+        weights_quant_args = QuantizationArgs(
+            num_bits=4,
+            type=QuantizationType.INT,
+            symmetric=True,
+            strategy=QuantizationStrategy.GROUP,
+            group_size=group_size,
+            observer="minmax"
+        )
+
         awq_modifier = AWQModifier(
             offload_device=torch.device("cpu"),
             scheme=None,
             ignore=ignore_layers,
-            targets=["Linear"],
-            config_groups={
-                "group_0": {
-                    "targets": ["Linear"],
-                    "weights": {
-                        "num_bits": 4,
-                        "type": "int",
-                        "symmetric": True,
-                        "strategy": "group",
-                        "group_size": group_size
-                    }
-                }
+            # targets=["Linear"],
+            config_groups = {
+                "group_0": QuantizationScheme(
+                    targets=["Linear"],
+                    weights=weights_quant_args,
+                    input_activations=None,
+                )
             }
         )
     else:
@@ -112,7 +123,7 @@ def get_awq_recipe(
             targets=["Linear"]   
         )
     recipe = [
-        SmoothQuantModifier(smoothing_strength=0.5), 
+        # SmoothQuantModifier(smoothing_strength=0.5), 
         awq_modifier,
     ]
     return recipe
@@ -244,7 +255,15 @@ def quantize_model(
 
     try:
         start_time = time.time()
-
+        # load_kwargs = {
+        #     "device_map": "auto",
+        #     "trust_remote_code": True,
+        #     "local_files_only": True
+        # }
+        # model = AutoModelForCausalLM.from_pretrained(
+        #     model_path,
+        #     **load_kwargs
+        # )
         # Perform one-shot quantization
         oneshot(
             model=model_path,
@@ -364,7 +383,7 @@ def main():
         "--ignore_layers",
         type=str,
         nargs="+",
-        default=["lm_head"],
+        default=[],
         help="List of layer names to ignore for quantization (default: lm_head)"
     )
 

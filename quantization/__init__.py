@@ -9,9 +9,6 @@
     from quantization import awq_quantize
 """
 
-__version__ = "1.0.0"
-__author__ = "Claude Code"
-
 # 导入主要的量化模块
 from .awq_quantize import quantize_model
 
