@@ -12,6 +12,7 @@
 </div>
 
 ## 🔥🔥🔥 News!!
+* Nov 19, 2025: ⚙️ We release a **new version** of our model, which **supports polyphonic pronunciation control** and improves the performance of emotion, speaking style, and paralinguistic editing.
 * Nov 12, 2025: 📦 We release the **optimized inference code** and **model weights** of **Step-Audio-EditX** ([HuggingFace](https://huggingface.co/stepfun-ai/Step-Audio-EditX);  [ModelScope](https://modelscope.cn/models/stepfun-ai/Step-Audio-EditX)) and **Step-Audio-Tokenizer**([HuggingFace](https://huggingface.co/stepfun-ai/Step-Audio-Tokenizer);  [ModelScope](https://modelscope.cn/models/stepfun-ai/Step-Audio-Tokenizer))
 * Nov 07, 2025: ✨ [Demo Page](https://stepaudiollm.github.io/step-audio-editx/) ; 🎮  [HF Space Playground](https://huggingface.co/spaces/stepfun-ai/Step-Audio-EditX)
 * Nov 06, 2025: 👋 We release the technical report of [Step-Audio-EditX](https://arxiv.org/abs/2511.03601).
@@ -26,12 +27,12 @@ We are open-sourcing Step-Audio-EditX, a powerful **3B-parameter** LLM-based **R
 - [x] Model Checkpoints
   - [x] Step-Audio-Tokenizer
   - [x] Step-Audio-EditX
-  - [ ] Step-Audio-EditX-Int8
+  - [ ] Step-Audio-EditX-Int4
 - [ ] Training Code
   - [ ] SFT training
   - [ ] PPO training
 - [ ] ⏳ Feature Support Plan
-  - [ ] Polyphone pronunciation control
+  - [x] Polyphone pronunciation control
   - [ ] More paralinguistic tags ([Cough, Crying, Stress, etc.])
   - [ ] Filler word removal
   
@@ -39,6 +40,8 @@ We are open-sourcing Step-Audio-EditX, a powerful **3B-parameter** LLM-based **R
 - **Zero-Shot TTS**
   - Excellent zero-shot TTS cloning for Mandarin, English, Sichuanese, and Cantonese.
   - To use a dialect, just add a **[Sichuanese]** or **[Cantonese]** tag before your text.
+  - 🔥 Polyphone pronunciation control, all you need to do is replace the polyphonic characters with pinyin.
+    - **[我也想过过过儿过过的生活]** -> **[我也想guo4guo4guo1儿guo4guo4的生活]**
  
     
 - **Emotion and Speaking Style Editing**
@@ -372,7 +375,6 @@ pip install -r requirements.txt
 git lfs install
 git clone https://huggingface.co/stepfun-ai/Step-Audio-Tokenizer
 git clone https://huggingface.co/stepfun-ai/Step-Audio-EditX
-git clone https://huggingface.co/stepfun-ai/Step-Audio-EditX-AWQ-4bit
 
 ```
 
@@ -381,7 +383,6 @@ After downloading the models, where_you_download_dir should have the following s
 where_you_download_dir
 ├── Step-Audio-Tokenizer
 ├── Step-Audio-EditX
-├── Step-Audio-EditX-AWQ-4bit
 ```
 
 #### Run with Docker
@@ -399,46 +400,6 @@ docker run --rm --gpus all \
     -p 7860:7860 \
     step-audio-editx
 ```
-
-
-### 🔄 Model Quantization (Optional)
-
-For users with limited GPU memory, you can create quantized versions of the model to reduce memory requirements:
-
-```bash
-# Create an AWQ 4-bit quantized model
-python quantization/awq_quantize.py --model_path path/to/Step-Audio-EditX
-
-# Advanced quantization options
-python quantization/awq_quantize.py
-```
-
-For detailed quantization options and parameters, see [quantization/README.md](quantization/README.md).
-
-#### Launch Web Demo
-Start a local server for online inference.
-Assume you have one GPU with at least 12GB memory available and have already downloaded all the models.
-
-```bash
-# Step-Audio-EditX demo
-python app.py --model-path where_you_download_dir --model-source local
-
-# Memory-efficient options with runtime quantization
-# For systems with limited GPU memory, you can use quantization to reduce memory usage:
-
-# INT8 quantization
-python app.py --model-path where_you_download_dir --model-source local --quantization int8
-
-# INT4 quantization
-python app.py --model-path where_you_download_dir --model-source local --quantization int4
-
-# Using pre-quantized AWQ models
-python app.py --model-path path/to/quantized/model --model-source local --quantization awq-4bit
-
-# Example with custom settings:
-python app.py --model-path where_you_download_dir --model-source local --torch-dtype float16 --enable-auto-transcribe
-```
-
 #### Local Inference Demo
 > [!TIP]
 > For optimal performance, keep audio under 30 seconds per inference.
@@ -533,6 +494,47 @@ python3 tts_infer.py \
 
 ```
 
+
+
+#### Launch Web Demo
+Start a local server for online inference.
+Assume you have one GPU with at least 12GB memory available and have already downloaded all the models.
+
+```bash
+# Step-Audio-EditX demo
+python app.py --model-path where_you_download_dir --model-source local
+
+# Memory-efficient options with runtime quantization
+# For systems with limited GPU memory, you can use quantization to reduce memory usage:
+
+# INT8 quantization
+python app.py --model-path where_you_download_dir --model-source local --quantization int8
+
+# INT4 quantization
+python app.py --model-path where_you_download_dir --model-source local --quantization int4
+
+# Using pre-quantized AWQ models
+python app.py --model-path path/to/quantized/model --model-source local --quantization awq-4bit
+
+# Example with custom settings:
+python app.py --model-path where_you_download_dir --model-source local --torch-dtype float16 --enable-auto-transcribe
+```
+
+### 🔄 Model Quantization (Optional)
+
+For users with limited GPU memory, you can create quantized versions of the model to reduce memory requirements:
+
+```bash
+# Create an AWQ 4-bit quantized model
+python quantization/awq_quantize.py --model_path path/to/Step-Audio-EditX
+
+# Advanced quantization options
+python quantization/awq_quantize.py
+```
+
+For detailed quantization options and parameters, see [quantization/README.md](quantization/README.md).
+
+
 ## Technical Details
 <img src="assets/architechture.png" width=900>
 Step-Audio-EditX comprises three primary components: 
@@ -555,11 +557,9 @@ Audio-Edit enables iterative control over emotion and speaking style across all 
 </div>
 
 ### Generalization on Closed-Source Models.
-- Step-Audio-EditX still achieves outstanding results on closed-source models, such as GPT-4o-mini-TTS, Eleven_Multilingual_v2, Doubao-Seed-TTS-2.0, and MiniMax-speech-2.6-hd, as shown in the table below (**sub** means Substitution).
+- For emotion and speaking style editing, the built-in voices of leading closed-source systems possess considerable in-context capabilities, allowing them to partially convey the emotions in the text. After a single editing round with Step-Audio-EditX, the emotion and style accuracy across all voice models exhibited significant improvement. Further enhancement was observed over the next two iterations, robustly demonstrating our model's strong generalization.
 
-- For emotion and speaking style editing task, the intensity of emotion and speaking style is markedly enhanced as the number of iterative rounds progresses.
-
-- For the paralinguistic editing task, Step-Audio-EditX achieves comparable paralinguistic fidelity after a single iteration, matching the performance of native content synthesized directly by closed-source models .
+- For paralinguistic editing, after editing with Step-Audio-EditX, the performance of paralinguistic reproduction is comparable to that achieved by the built-in voices of closed-source models when synthesizing native paralinguistic content directly. (**sub** means replacement of paralinguistic tags with native words)
 
 
 <div align="center">
