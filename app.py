@@ -252,7 +252,7 @@ class EditxTab:
             gr.Markdown("""
                 **Operation Workflow:**
                 - Upload the audio to be edited on the left side and fill in the corresponding text content of the audio;
-                - If the task requires modifying text content (such as clone, para-linguistic), fill in the text to be synthesized in the "clone text" field. For all other tasks, keep the uploaded audio text content unchanged;
+                - If the task requires modifying text content (such as clone, para-linguistic), fill in the text to be synthesized in the "target text" field. For all other tasks, keep the uploaded audio text content unchanged;
                 - Select tasks and subtasks on the right side (some tasks have no subtasks, such as vad, etc.);
                 - Click the "CLONE" or "EDIT" button on the left side, and audio will be generated in the dialog box on the right side.
                 """)
@@ -260,8 +260,8 @@ class EditxTab:
                 **Para-linguistic Description:**
                 - Supported tags include: [Breathing] [Laughter] [Surprise-oh] [Confirmation-en] [Uhm] [Surprise-ah] [Surprise-wa] [Sigh] [Question-ei] [Dissatisfaction-hnn]
                 - Example:
-                    - Fill in "clone text" field: "Great, the weather is so nice today." Click the "CLONE" button to get audio.
-                    - Change "clone text" field to: "Great[Laughter], the weather is so nice today[Surprise-ah]." Click the "EDIT" button to get para-linguistic audio.
+                    - Fill in "target text" field: "Great, the weather is so nice today." Click the "CLONE" button to get audio.
+                    - Change "target text" field to: "Great[Laughter], the weather is so nice today[Surprise-ah]." Click the "EDIT" button to get para-linguistic audio.
                 """)
 
     def register_events(self):
