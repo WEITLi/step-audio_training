@@ -60,7 +60,7 @@ We are open-sourcing Step-Audio-EditX, a powerful **3B-parameter** LLM-based **R
 - **Paralinguistic Editing**
   -  Precise control over 10 types of paralinguistic features for more natural, human-like, and expressive synthetic audio.
   - Supporting Tags:
-    - [ *Breathing*, *Laughter*, *Suprise-oh*, *Confirmation-en*, *Uhm*, *Suprise-ah*, *Suprise-wa*, *Sigh*, *Question-ei*, *Dissatisfaction-hnn* ]
+    - [ *Breathing*, *Laughter*, *Surprise-oh*, *Confirmation-en*, *Uhm*, *Surprise-ah*, *Surprise-wa*, *Sigh*, *Question-ei*, *Dissatisfaction-hnn* ]
 
 - **Available Tags**
 <table>
@@ -463,7 +463,7 @@ python3 tts_infer.py \
     --output-dir ./output 
 
 # paraliguistic 
-# supported tags, Breathing, Laughter, Suprise-oh, Confirmation-en, Uhm, Suprise-ah, Suprise-wa, Sigh, Question-ei, Dissatisfaction-hnn
+# supported tags, Breathing, Laughter, Surprise-oh, Confirmation-en, Uhm, Surprise-ah, Surprise-wa, Sigh, Question-ei, Dissatisfaction-hnn
 python3 tts_infer.py \
     --model-path where_you_download_dir \
     --prompt-text "我觉得这个计划大概是可行的，不过还需要再仔细考虑一下。" \
