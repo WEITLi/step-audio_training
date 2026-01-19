@@ -5,6 +5,10 @@ basic:
   max_epoch: 50
   log_interval: 50  # 每50步打印日志
   val_interval: 1   # 每1个epoch验证一次
+  train_mode: "both"  # 训练模式: "llm" | "flow" | "both"
+                      # llm: 仅训练LLM (LoRA)
+                      # flow: 仅训练Flow (解码器)
+                      # both: 分阶段训练 (LLM -> Flow -> 联合)
 
 # 模型配置（适配StepAudioEditX的LLM/Flow）
 model:

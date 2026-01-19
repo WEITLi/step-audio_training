@@ -28,17 +28,17 @@ def parse_args():
         help='训练配置文件路径'
     )
     parser.add_argument(
+        '--mode',
+        type=str,
+        default=None,
+        choices=['llm', 'flow', 'both'],
+        help='训练模式: llm (仅LLM), flow (仅Flow), both (两者)'
+    )
+    parser.add_argument(
         '--resume',
         type=str,
         default=None,
         help='恢复训练的 checkpoint 路径'
-    )
-    parser.add_argument(
-        '--stage',
-        type=int,
-        default=0,
-        choices=[0, 1, 2, 3],
-        help='训练阶段 (0=全部, 1=仅LLM, 2=仅Flow, 3=联合微调)'
     )
     return parser.parse_args()
 
@@ -54,7 +54,13 @@ def main():
     print(f"\n加载配置: {args.config}")
     cfg = load_and_validate_config(args.config)
     
+    # 如果命令行指定了训练模式，覆盖配置文件
+    if args.mode is not None:
+        cfg.basic.train_mode = args.mode
+        print(f"\n训练模式 (命令行覆盖): {args.mode}")
+    
     print(f"\n配置概览:")
+    print(f"  训练模式: {cfg.basic.train_mode}")
     print(f"  设备: {cfg.basic.device}")
     print(f"  随机种子: {cfg.basic.seed}")
     print(f"  最大 epoch: {cfg.basic.max_epoch}")

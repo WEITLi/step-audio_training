@@ -509,7 +509,7 @@ def validate_flow(
 
 def train_llm_flow(cfg: TrainConfig):
     """
-    主训练函数：分阶段训练 LLM 和 Flow
+    主训练函数：根据 train_mode 选择训练 LLM 和/或 Flow
     
     Args:
         cfg: 训练配置
@@ -525,10 +525,17 @@ def train_llm_flow(cfg: TrainConfig):
     
     logger.info("="*60)
     logger.info("Step-Audio-EditX LLM + Flow 微调训练")
+    logger.info(f"训练模式: {cfg.basic.train_mode.upper()}")
     logger.info("="*60)
     
     # 创建保存目录
     os.makedirs(cfg.save.ckpt_dir, exist_ok=True)
+    
+    # 根据训练模式决定是否初始化模型
+    train_mode = cfg.basic.train_mode.lower()
+    
+    if train_mode not in ['llm', 'flow', 'both']:
+        raise ValueError(f"无效的训练模式: {train_mode}，必须是 'llm', 'flow' 或 'both'")
     
     # 准备模型
     logger.info("初始化模型...")
@@ -558,38 +565,85 @@ def train_llm_flow(cfg: TrainConfig):
         train=False
     )
     
-    # 初始化优化器（分 LLM/Flow 设置不同学习率）
-    optimizer = optim.AdamW([
-        {"params": llm.parameters(), "lr": cfg.optim.lr_llm},
-        {"params": flow.parameters(), "lr": cfg.optim.lr_flow}
-    ], weight_decay=cfg.optim.weight_decay)
+    # 根据训练模式初始化优化器
+    if train_mode == 'llm':
+        # 仅训练 LLM
+        optimizer = optim.AdamW(
+            llm.parameters(), 
+            lr=cfg.optim.lr_llm,
+            weight_decay=cfg.optim.weight_decay
+        )
+    elif train_mode == 'flow':
+        # 仅训练 Flow
+        optimizer = optim.AdamW(
+            flow.parameters(),
+            lr=cfg.optim.lr_flow,
+            weight_decay=cfg.optim.weight_decay
+        )
+    else:  # both
+        # 训练两者
+        optimizer = optim.AdamW([
+            {"params": llm.parameters(), "lr": cfg.optim.lr_llm},
+            {"params": flow.parameters(), "lr": cfg.optim.lr_flow}
+        ], weight_decay=cfg.optim.weight_decay)
     
     # 学习率调度器
     scheduler = WarmupLR(optimizer, cfg.optim.warmup_steps)
     
-    # 阶段 1: 单独微调 LLM
-    llm, _ = train_stage1_llm(
-        llm, train_loader, val_loader,
-        optimizer, scheduler, cfg
-    )
-    
-    # 阶段 2: 单独微调 Flow
-    flow, _ = train_stage2_flow(
-        flow, llm, train_loader, val_loader,
-        optimizer, scheduler, cfg
-    )
-    
-    # 阶段 3: 联合微调（可选）
-    if cfg.stage.stage3_epochs > 0:
-        llm, flow, _ = train_stage3_joint(
-            llm, flow, train_loader, val_loader,
+    # 根据训练模式执行相应的训练阶段
+    if train_mode == 'llm':
+        logger.info("\n训练模式: 仅 LLM (LoRA)\n")
+        llm, _ = train_stage1_llm(
+            llm, train_loader, val_loader,
             optimizer, scheduler, cfg
         )
-    
-    logger.info("="*60)
-    logger.info("训练完成！")
-    logger.info(f"LLM checkpoint: {cfg.save.ckpt_dir}/llm_best.pt")
-    logger.info(f"Flow checkpoint: {cfg.save.ckpt_dir}/flow_best.pt")
-    logger.info("="*60)
+        logger.info("="*60)
+        logger.info("训练完成！")
+        logger.info(f"LLM checkpoint: {cfg.save.ckpt_dir}/llm_best.pt")
+        logger.info("="*60)
+        
+    elif train_mode == 'flow':
+        logger.info("\n训练模式: 仅 Flow (解码器)\n")
+        # 冻结 LLM，仅用于 token 生成
+        llm.eval()
+        for param in llm.parameters():
+            param.requires_grad = False
+        
+        flow, _ = train_stage2_flow(
+            flow, llm, train_loader, val_loader,
+            optimizer, scheduler, cfg,
+            start_epoch=0
+        )
+        logger.info("="*60)
+        logger.info("训练完成！")
+        logger.info(f"Flow checkpoint: {cfg.save.ckpt_dir}/flow_best.pt")
+        logger.info("="*60)
+        
+    else:  # both
+        logger.info("\n训练模式: 分阶段训练 (LLM -> Flow -> 联合)\n")
+        # 阶段 1: 单独微调 LLM
+        llm, _ = train_stage1_llm(
+            llm, train_loader, val_loader,
+            optimizer, scheduler, cfg
+        )
+        
+        # 阶段 2: 单独微调 Flow
+        flow, _ = train_stage2_flow(
+            flow, llm, train_loader, val_loader,
+            optimizer, scheduler, cfg
+        )
+        
+        # 阶段 3: 联合微调（可选）
+        if cfg.stage.stage3_epochs > 0:
+            llm, flow, _ = train_stage3_joint(
+                llm, flow, train_loader, val_loader,
+                optimizer, scheduler, cfg
+            )
+        
+        logger.info("="*60)
+        logger.info("训练完成！")
+        logger.info(f"LLM checkpoint: {cfg.save.ckpt_dir}/llm_best.pt")
+        logger.info(f"Flow checkpoint: {cfg.save.ckpt_dir}/flow_best.pt")
+        logger.info("="*60)
     
     return llm, flow

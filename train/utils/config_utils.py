@@ -85,6 +85,7 @@ class BasicConfig:
     max_epoch: int = 50
     log_interval: int = 50
     val_interval: int = 1
+    train_mode: str = "both"  # "llm" | "flow" | "both"
 
 
 @dataclass
