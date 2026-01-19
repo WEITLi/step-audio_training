@@ -61,6 +61,74 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             # self.encoder.scatter_cuda_graph(enable_cuda_graph)
             self.decoder.scatter_cuda_graph(enable_cuda_graph)
 
+    def forward(
+            self,
+            token: torch.Tensor,
+            token_len: torch.Tensor,
+            prompt_token: torch.Tensor,
+            prompt_token_len: torch.Tensor,
+            prompt_feat: torch.Tensor,
+            prompt_feat_len: torch.Tensor,
+            embedding: torch.Tensor,
+            n_timesteps: int = 10,
+    ) -> torch.Tensor:
+        """
+        训练态 forward 方法（支持梯度回传）
+        参数说明与原有 inference 方法一致
+        
+        Args:
+            token: 目标语音 token (B, T)
+            token_len: token 长度 (B,)
+            prompt_token: 参考语音 token (B, T_p)
+            prompt_token_len: 参考 token 长度 (B,)
+            prompt_feat: 参考 mel 特征 (B, T_m, F)
+            prompt_feat_len: 参考 mel 长度 (B,)
+            embedding: 说话人嵌入 (B, D)
+            n_timesteps: Flow 步数
+            
+        Returns:
+            生成的 mel 特征 (B, F, T)
+        """
+        assert token.shape[0] == 1
+        
+        # xvec projection
+        embedding = F.normalize(embedding, dim=1)
+        embedding = self.spk_embed_affine_layer(embedding)
+        
+        # concat text and prompt_text
+        token_len = prompt_token_len + token_len
+        token = torch.concat([prompt_token, token], dim=1)
+        
+        mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
+        token = self.input_embedding(torch.clamp(token, min=0)) * mask
+        
+        # token encode
+        h, _ = self.encoder.forward(token, token_len)
+        h = self.encoder_proj(h)
+        
+        # condition
+        mel_len1 = prompt_feat.shape[1]
+        mel_len2 = h.shape[1] - prompt_feat.shape[1]
+        
+        conds = torch.zeros_like(h)
+        conds[:, :mel_len1] = prompt_feat
+        conds = conds.transpose(1, 2).contiguous()
+        
+        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
+        
+        # 训练态前向（支持梯度）
+        feat = self.decoder.forward(
+            mu=h.transpose(1, 2).contiguous(),
+            mask=mask.unsqueeze(1),
+            spks=embedding,
+            cond=conds,
+            n_timesteps=n_timesteps,
+        )
+        
+        feat = feat[:, :, mel_len1:]
+        assert feat.shape[2] == mel_len2
+        return feat
+
     @torch.inference_mode()
     def inference(self,
                   token,

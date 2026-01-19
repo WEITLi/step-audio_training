@@ -113,6 +113,70 @@ class StepAudioTTS:
         # Use system prompts from config module
         self.edit_clone_sys_prompt_tpl = AUDIO_EDIT_CLONE_SYSTEM_PROMPT_TPL
         self.edit_sys_prompt = AUDIO_EDIT_SYSTEM_PROMPT
+    
+    def load_finetuned_model(self, llm_ckpt_path: str, flow_ckpt_path: str):
+        """
+        加载微调后的 LLM 和 Flow 权重
+        
+        Args:
+            llm_ckpt_path: LLM LoRA 权重路径 (例如: ckpt/finetune/llm_best.pt)
+            flow_ckpt_path: Flow 权重路径 (例如: ckpt/finetune/flow_best.pt)
+        
+        Raises:
+            FileNotFoundError: 如果权重文件不存在
+            RuntimeError: 如果权重加载失败
+        """
+        try:
+            # 加载 LLM LoRA 权重
+            if os.path.exists(llm_ckpt_path):
+                from peft import PeftModel
+                
+                logger.info(f"🔄 加载 LLM LoRA 权重: {llm_ckpt_path}")
+                
+                # 如果 LLM 已经是 PEFT 模型，直接加载权重
+                if hasattr(self.llm, 'base_model'):
+                    ckpt = torch.load(llm_ckpt_path, map_location='cpu')
+                    self.llm.load_state_dict(ckpt['model_state_dict'], strict=False)
+                else:
+                    # 从 checkpoint 中提取 LoRA 配置并加载
+                    self.llm = PeftModel.from_pretrained(
+                        self.llm, 
+                        os.path.dirname(llm_ckpt_path),
+                        is_trainable=False
+                    )
+                
+                logger.info("✅ LLM LoRA 权重加载成功")
+            else:
+                raise FileNotFoundError(f"LLM checkpoint 不存在: {llm_ckpt_path}")
+            
+            # 加载 Flow 权重
+            if os.path.exists(flow_ckpt_path):
+                logger.info(f"🔄 加载 Flow 权重: {flow_ckpt_path}")
+                
+                ckpt = torch.load(flow_ckpt_path, map_location='cpu')
+                
+                # 提取 Flow 模型的 state_dict
+                flow_state_dict = ckpt['model_state_dict']
+                
+                # 加载到 CosyVoice 的 Flow 模型
+                self.cosy_model.cosy_impl.flow.load_state_dict(
+                    flow_state_dict, 
+                    strict=False
+                )
+                
+                logger.info("✅ Flow 权重加载成功")
+            else:
+                raise FileNotFoundError(f"Flow checkpoint 不存在: {flow_ckpt_path}")
+            
+            # 切换到推理模式
+            self.llm.eval()
+            self.cosy_model.cosy_impl.flow.eval()
+            
+            logger.info("✨ 微调权重加载完成，模型已切换到推理模式")
+            
+        except Exception as e:
+            logger.error(f"❌ 微调权重加载失败: {e}")
+            raise RuntimeError(f"加载微调权重时出错: {e}")
 
     def clone(
         self,
