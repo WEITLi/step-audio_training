@@ -44,13 +44,29 @@ class OptimConfig:
 @dataclass
 class DataConfig:
     """数据集配置"""
-    train_path: str = "./data/train.jsonl"
-    val_path: str = "./data/val.jsonl"
-    batch_size: int = 2
+    train_data: str = "./data/train.data.list"  # parquet 文件列表
+    cv_data: str = "./data/dev.data.list"
     sample_rate: int = 24000
-    max_audio_len: int = 10
-    max_text_len: int = 200
-    num_workers: int = 4
+    token_mel_ratio: int = 2  # token 和 mel 的比例
+    
+    # 数据过滤参数
+    filter: dict = field(default_factory=lambda: {
+        'max_length': 40960,
+        'min_length': 100,
+        'token_max_length': 200,
+        'token_min_length': 1,
+    })
+    
+    # DataLoader 参数
+    num_workers: int = 2
+    prefetch_factor: int = 100
+    pin_memory: bool = True
+    
+    # Pipeline 参数
+    shuffle_size: int = 1000
+    sort_size: int = 500
+    max_frames_in_batch: int = 2000
+    use_spk_embedding: bool = False
 
 
 @dataclass

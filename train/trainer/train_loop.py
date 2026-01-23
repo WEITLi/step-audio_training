@@ -1,125 +1,207 @@
 """
-训练循环核心逻辑
-实现分阶段训练：LLM 单独微调 → Flow 单独微调 → 联合微调
+简化的训练循环实现
+使用新的 parquet 数据格式和 CosyVoice-style data pipeline
 """
 
 import os
-import sys
-from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
-
+import logging
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import logging
 
-# 添加项目根目录到路径
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from train.utils.config_utils import TrainConfig
+from train.dataset.dataset import Dataset
+from train.dataset import processor
 from train.utils.train_utils import (
     set_seed, save_ckpt, load_ckpt, clip_grad_norm,
-    AverageMeter, get_lr, setup_logging, print_model_info
+    AverageMeter, get_lr, setup_logging, count_parameters
 )
-from train.dataset.audio_edit_dataset import build_dataloader
 from train.trainer.model_adapter import prepare_models_for_training
+from tokenizer import StepAudioTokenizer
+from model_loader import ModelSource
 
 logger = logging.getLogger(__name__)
 
 
 class WarmupLR(torch.optim.lr_scheduler._LRScheduler):
-    """
-    Warmup 学习率调度器
-    """
-    def __init__(
-        self, 
-        optimizer: torch.optim.Optimizer,
-        warmup_steps: int,
-        last_epoch: int = -1
-    ):
+    """Warmup learning rate scheduler"""
+    
+    def __init__(self, optimizer, warmup_steps):
         self.warmup_steps = warmup_steps
-        super().__init__(optimizer, last_epoch)
+        super().__init__(optimizer)
     
     def get_lr(self):
-        if self._step_count <= self.warmup_steps:
-            scale = self._step_count / max(1, self.warmup_steps)
-            return [base_lr * scale for base_lr in self.base_lrs]
+        if self._step_count < self.warmup_steps:
+            return [base_lr * self._step_count / self.warmup_steps 
+                    for base_lr in self.base_lrs]
         return self.base_lrs
 
 
-def compute_llm_loss(
-    llm: nn.Module,
-    output_ids: torch.Tensor,
-    target_tokens: torch.Tensor,
-    target_token_len: torch.Tensor
-) -> torch.Tensor:
+def build_dataloader(cfg, tokenizer, train=True):
+    """构建 DataLoader
+    
+    Args:
+        cfg: 配置对象
+        tokenizer: Qwen tokenizer
+        train: 是否为训练集
+        
+    Returns:
+        DataLoader
     """
-    计算 LLM 损失（token 交叉熵）
+    data_file = cfg.data.train_data if train else cfg.data.cv_data
+    
+    # 构建 mel spectrogram 提取器
+    import torchaudio
+    feat_extractor = torchaudio.transforms.MelSpectrogram(
+        sample_rate=cfg.data.sample_rate,
+        n_fft=1920,
+        hop_length=480,
+        win_length=1920,
+        n_mels=80,
+        f_min=0,
+        f_max=8000,
+        center=False
+    )
+    
+    # Data pipeline
+    data_pipeline = [
+        processor.parquet_opener,
+        lambda data, mode: processor.tokenize(data, tokenizer, mode),
+        lambda data, mode: processor.filter(data, **cfg.data.filter, mode=mode),
+        lambda data, mode: processor.resample(data, cfg.data.sample_rate, mode=mode),
+        lambda data, mode: processor.compute_fbank(data, feat_extractor, cfg.data.token_mel_ratio, mode=mode),
+        lambda data, mode: processor.parse_embedding(data, normalize=True, mode=mode),
+        lambda data, mode: processor.shuffle(data, cfg.data.shuffle_size, mode=mode) if train else data,
+        lambda data, mode: processor.sort(data, cfg.data.sort_size, mode=mode),
+        lambda data, mode: processor.dynamic_batch(data, cfg.data.max_frames_in_batch, mode=mode),
+        lambda data, mode: processor.padding(data, cfg.data.use_spk_embedding, mode=mode),
+    ]
+    
+    # 创建 dataset
+    dataset = Dataset(
+        data_file,
+        data_pipeline,
+        mode='train' if train else 'eval',
+        shuffle=train,
+        partition=True
+    )
+    
+    # 创建 DataLoader
+    dataloader = DataLoader(
+        dataset,
+        batch_size=None,  # batch 已经在 pipeline 中完成
+        num_workers=cfg.data.num_workers,
+        prefetch_factor=cfg.data.prefetch_factor,
+        pin_memory=cfg.data.pin_memory
+    )
+    
+    return dataloader
+
+
+def compute_llm_loss(llm, batch, device):
+    """计算 LLM 损失
     
     Args:
         llm: LLM 模型
-        output_ids: 模型输出 logits
-        target_tokens: 目标 token
-        target_token_len: 目标 token 长度
+        batch: 数据 batch
+        device: 设备
         
     Returns:
-        损失值
+        loss: 交叉熵损失
     """
-    # 展平为 (B*T, V) 和 (B*T,)
-    batch_size, seq_len, vocab_size = output_ids.shape
-    output_flat = output_ids.reshape(-1, vocab_size)
-    target_flat = target_tokens.reshape(-1)
+    text_token = batch['text_token'].to(device)
+    text_token_len = batch['text_token_len'].to(device)
+    speech_token = batch['speech_token'].to(device)
+    speech_token_len = batch['speech_token_len'].to(device)
+    embedding = batch['embedding'].to(device)
     
-    # 忽略 padding 位置
-    loss = torch.nn.functional.cross_entropy(
-        output_flat, 
-        target_flat,
-        ignore_index=0,  # 假设 0 是 padding token
-        reduction='mean'
+    # Forward pass
+    # TODO: 这里需要根据实际的 LLM forward 接口调整
+    # 假设 LLM 接受 (text_token, embedding) 并输出 logits
+    logits = llm(
+        input_ids=text_token,
+        attention_mask=(text_token != 0).long(),
+    ).logits
+    
+    # 计算 cross-entropy loss
+    loss_fct = nn.CrossEntropyLoss(ignore_index=0)
+    
+    # 只计算有效 token 的损失
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = speech_token[..., 1:].contiguous()
+    
+    loss = loss_fct(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1)
     )
     
     return loss
 
 
-def compute_flow_loss(
-    flow_output: torch.Tensor,
-    target_mel: torch.Tensor,
-    target_mel_len: torch.Tensor
-) -> torch.Tensor:
-    """
-    计算 Flow 损失（mel MSE）
+def compute_flow_loss(flow, batch, device):
+    """计算 Flow 损失
     
     Args:
-        flow_output: Flow 模型输出的 mel
-        target_mel: 目标 mel
-        target_mel_len: 目标 mel 长度
+        flow: Flow 模型
+        batch: 数据 batch
+        device: 设备
         
     Returns:
-        损失值
+        loss: MSE 损失
     """
-    # MSE 损失
-    mse_loss = torch.nn.functional.mse_loss(
-        flow_output, 
-        target_mel[:, :, :flow_output.shape[-1]],
-        reduction='mean'
+    speech_token = batch['speech_token'].to(device)
+    speech_token_len = batch['speech_token_len'].to(device)
+    speech_feat = batch['speech_feat'].to(device)
+    speech_feat_len = batch['speech_feat_len'].to(device)
+    embedding = batch['embedding'].to(device)
+    
+    # Forward pass
+    # 使用 Flow 模型的 forward 方法（已添加）
+    pred_feat = flow.forward(
+        token=speech_token,
+        token_len=speech_token_len,
+        prompt_token=speech_token[:, :10],  # dummy prompt
+        prompt_token_len=torch.full_like(speech_token_len, 10),
+        prompt_feat=speech_feat[:, :20],  # dummy prompt
+        prompt_feat_len=torch.full_like(speech_feat_len, 20),
+        embedding=embedding,
+        n_timesteps=10
     )
     
-    return mse_loss
+    # 计算 MSE loss
+    loss = nn.functional.mse_loss(pred_feat, speech_feat)
+    
+    return loss
 
 
-def train_stage1_llm(
-    llm: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler,
-    cfg: TrainConfig,
-    start_epoch: int = 0
-) -> Tuple[nn.Module, float]:
+def validate(model, dataloader, compute_loss_fn, device, model_name):
+    """验证函数
+    
+    Args:
+        model: 模型
+        dataloader: 验证数据加载器
+        compute_loss_fn: 损失计算函数
+        device: 设备
+        model_name: 模型名称
+        
+    Returns:
+        avg_loss: 平均损失
     """
-    阶段 1: 单独微调 LLM
+    model.eval()
+    val_loss = AverageMeter()
+    
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc=f"Validating {model_name}", leave=False):
+            loss = compute_loss_fn(model, batch, device)
+            val_loss.update(loss.item(), n=len(batch['utts']))
+    
+    model.train()
+    return val_loss.avg
+
+
+def train_llm_only(llm, train_loader, val_loader, optimizer, scheduler, cfg):
+    """仅训练 LLM (LoRA)
     
     Args:
         llm: LLM 模型
@@ -127,395 +209,161 @@ def train_stage1_llm(
         val_loader: 验证数据加载器
         optimizer: 优化器
         scheduler: 学习率调度器
-        cfg: 训练配置
-        start_epoch: 起始 epoch
+        cfg: 配置
         
     Returns:
-        (训练后的 LLM, 最佳验证损失)
+        llm: 训练后的 LLM
+        best_val_loss: 最佳验证损失
     """
-    print("\n" + "="*60)
-    print("阶段 1: 单独微调 LLM (LoRA)")
-    print("="*60 + "\n")
+    logger.info("=" * 60)
+    logger.info("开始训练 LLM (LoRA)")
+    logger.info("=" * 60)
     
-    best_val_loss = float('inf')
     device = cfg.basic.device
+    best_val_loss = float('inf')
     
-    for epoch in range(start_epoch, cfg.stage.stage1_epochs):
+    for epoch in range(cfg.stage.stage1_epochs):
         llm.train()
-        loss_meter = AverageMeter("LLM Loss")
+        train_loss = AverageMeter()
         
-        pbar = tqdm(enumerate(train_loader), total=len(train_loader), 
-                   desc=f"Epoch {epoch+1}/{cfg.stage.stage1_epochs}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.stage.stage1_epochs}")
         
-        for step, batch in pbar:
-            # 数据移动到设备
-            prompt_tokens = batch['prompt_tokens'].to(device)
-            target_tokens = batch['target_tokens'].to(device)
-            target_token_len = batch['target_token_len'].to(device)
+        for batch_idx, batch in enumerate(pbar):
+            # Forward
+            loss = compute_llm_loss(llm, batch, device)
             
-            # 前向传播
-            output_ids = llm(prompt_tokens)
-            
-            # 处理输出格式（如果是 CausalLMOutput）
-            if hasattr(output_ids, 'logits'):
-                output_ids = output_ids.logits
-            
-            # 计算损失
-            loss = compute_llm_loss(llm, output_ids, target_tokens, target_token_len)
-            
-            # 梯度累积
-            loss = loss / cfg.optim.accum_grad
+            # Backward
             loss.backward()
             
-            if (step + 1) % cfg.optim.accum_grad == 0:
-                # 梯度裁剪
+            # Gradient accumulation
+            if (batch_idx + 1) % cfg.optim.accum_grad == 0:
                 clip_grad_norm(llm.parameters(), cfg.optim.grad_clip)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
             
-            # 更新统计
-            loss_meter.update(loss.item() * cfg.optim.accum_grad)
+            # Update metrics
+            train_loss.update(loss.item(), n=len(batch['utts']))
             
-            # 日志
-            if (step + 1) % cfg.basic.log_interval == 0:
-                lr = get_lr(optimizer)[0]
+            # Log
+            if (batch_idx + 1) % cfg.basic.log_interval == 0:
                 pbar.set_postfix({
-                    'loss': f"{loss_meter.avg:.4f}",
-                    'lr': f"{lr:.2e}"
+                    'loss': f'{train_loss.avg:.4f}',
+                    'lr': f'{get_lr(optimizer):.2e}'
                 })
         
-        # 验证
-        if (epoch + 1) % cfg.basic.val_interval == 0:
-            val_loss = validate_llm(llm, val_loader, device)
-            logger.info(f"Epoch {epoch+1}, Val LLM Loss: {val_loss:.4f}")
-            
-            # 保存最佳模型
-            is_best = val_loss < best_val_loss
-            if is_best:
-                best_val_loss = val_loss
-            
+        # Validation
+        val_loss = validate(llm, val_loader, compute_llm_loss, device, "LLM")
+        
+        logger.info(f"Epoch {epoch+1}: train_loss={train_loss.avg:.4f}, val_loss={val_loss:.4f}")
+        
+        # Save checkpoint
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             save_ckpt(
-                llm, optimizer, epoch, val_loss, 
-                cfg.save.ckpt_dir, "llm", scheduler, is_best
+                llm, optimizer, scheduler, epoch, best_val_loss,
+                os.path.join(cfg.save.ckpt_dir, "llm_best.pt")
+            )
+            logger.info(f"保存最佳 LLM checkpoint (val_loss={val_loss:.4f})")
+        
+        if (epoch + 1) % cfg.save.save_interval == 0:
+            save_ckpt(
+                llm, optimizer, scheduler, epoch, best_val_loss,
+                os.path.join(cfg.save.ckpt_dir, f"llm_epoch_{epoch+1}.pt")
             )
     
-    print(f"\n阶段 1 完成！最佳验证损失: {best_val_loss:.4f}\n")
     return llm, best_val_loss
 
 
-def train_stage2_flow(
-    flow: nn.Module,
-    llm: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler,
-    cfg: TrainConfig,
-    start_epoch: int = 0
-) -> Tuple[nn.Module, float]:
-    """
-    阶段 2: 单独微调 Flow（使用阶段 1 训练好的 LLM 生成 token）
+def train_flow_only(flow, llm, train_loader, val_loader, optimizer, scheduler, cfg):
+    """仅训练 Flow (解码器)
     
     Args:
         flow: Flow 模型
-        llm: LLM 模型（冻结）
+        llm: LLM 模型 (冻结，用于生成 token)
         train_loader: 训练数据加载器
         val_loader: 验证数据加载器
         optimizer: 优化器
         scheduler: 学习率调度器
-        cfg: 训练配置
-        start_epoch: 起始 epoch
+        cfg: 配置
         
     Returns:
-        (训练后的 Flow, 最佳验证损失)
+        flow: 训练后的 Flow
+        best_val_loss: 最佳验证损失
     """
-    print("\n" + "="*60)
-    print("阶段 2: 单独微调 Flow (解码器)")
-    print("="*60 + "\n")
+    logger.info("=" * 60)
+    logger.info("开始训练 Flow (解码器)")
+    logger.info("=" * 60)
+    
+    device = cfg.basic.device
+    best_val_loss = float('inf')
     
     # 冻结 LLM
     llm.eval()
     for param in llm.parameters():
         param.requires_grad = False
     
-    best_val_loss = float('inf')
-    device = cfg.basic.device
-    
-    for epoch in range(start_epoch, cfg.stage.stage2_epochs):
+    for epoch in range(cfg.stage.stage2_epochs):
         flow.train()
-        loss_meter = AverageMeter("Flow Loss")
+        train_loss = AverageMeter()
         
-        pbar = tqdm(enumerate(train_loader), total=len(train_loader),
-                   desc=f"Epoch {epoch+1}/{cfg.stage.stage2_epochs}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.stage.stage2_epochs}")
         
-        for step, batch in pbar:
-            # 数据移动到设备
-            prompt_tokens = batch['prompt_tokens'].to(device)
-            prompt_token_len = batch['prompt_token_len'].to(device)
-            target_tokens = batch['target_tokens'].to(device)
-            target_token_len = batch['target_token_len'].to(device)
-            prompt_mel = batch['prompt_mel'].to(device)
-            prompt_mel_len = batch['prompt_mel_len'].to(device)
-            target_mel = batch['target_mel'].to(device)
-            target_mel_len = batch['target_mel_len'].to(device)
-            speaker_embedding = batch['speaker_embedding'].to(device)
+        for batch_idx, batch in enumerate(pbar):
+            # Forward
+            loss = compute_flow_loss(flow, batch, device)
             
-            # 使用冻结的 LLM 生成 token（可选，也可直接使用 target_tokens）
-            # 这里直接使用 target_tokens 作为监督信号
-            
-            # Flow 前向传播
-            # 调用训练态 forward（需要在 flow.py 中实现）
-            flow_output = flow.forward(
-                token=target_tokens,
-                token_len=target_token_len,
-                prompt_token=prompt_tokens,
-                prompt_token_len=prompt_token_len,
-                prompt_feat=prompt_mel.transpose(1, 2),  # (B, T, F) -> (B, T, F)
-                prompt_feat_len=prompt_mel_len,
-                embedding=speaker_embedding,
-                n_timesteps=cfg.model_flow.n_timesteps
-            )
-            
-            # 计算损失
-            loss = compute_flow_loss(flow_output, target_mel, target_mel_len)
-            
-            # 梯度累积
-            loss = loss / cfg.optim.accum_grad
+            # Backward
             loss.backward()
             
-            if (step + 1) % cfg.optim.accum_grad == 0:
+            # Gradient accumulation
+            if (batch_idx + 1) % cfg.optim.accum_grad == 0:
                 clip_grad_norm(flow.parameters(), cfg.optim.grad_clip)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
             
-            # 更新统计
-            loss_meter.update(loss.item() * cfg.optim.accum_grad)
+            # Update metrics
+            train_loss.update(loss.item(), n=len(batch['utts']))
             
-            # 日志
-            if (step + 1) % cfg.basic.log_interval == 0:
-                lr = get_lr(optimizer)[0]
+            # Log
+            if (batch_idx + 1) % cfg.basic.log_interval == 0:
                 pbar.set_postfix({
-                    'loss': f"{loss_meter.avg:.4f}",
-                    'lr': f"{lr:.2e}"
+                    'loss': f'{train_loss.avg:.4f}',
+                    'lr': f'{get_lr(optimizer):.2e}'
                 })
         
-        # 验证
-        if (epoch + 1) % cfg.basic.val_interval == 0:
-            val_loss = validate_flow(flow, llm, val_loader, device, cfg)
-            logger.info(f"Epoch {epoch+1}, Val Flow Loss: {val_loss:.4f}")
-            
-            is_best = val_loss < best_val_loss
-            if is_best:
-                best_val_loss = val_loss
-            
+        # Validation
+        val_loss = validate(flow, val_loader, compute_flow_loss, device, "Flow")
+        
+        logger.info(f"Epoch {epoch+1}: train_loss={train_loss.avg:.4f}, val_loss={val_loss:.4f}")
+        
+        # Save checkpoint
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             save_ckpt(
-                flow, optimizer, epoch, val_loss,
-                cfg.save.ckpt_dir, "flow", scheduler, is_best
+                flow, optimizer, scheduler, epoch, best_val_loss,
+                os.path.join(cfg.save.ckpt_dir, "flow_best.pt")
+            )
+            logger.info(f"保存最佳 Flow checkpoint (val_loss={val_loss:.4f})")
+        
+        if (epoch + 1) % cfg.save.save_interval == 0:
+            save_ckpt(
+                flow, optimizer, scheduler, epoch, best_val_loss,
+                os.path.join(cfg.save.ckpt_dir, f"flow_epoch_{epoch+1}.pt")
             )
     
-    print(f"\n阶段 2 完成！最佳验证损失: {best_val_loss:.4f}\n")
     return flow, best_val_loss
 
 
-def train_stage3_joint(
-    llm: nn.Module,
-    flow: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler,
-    cfg: TrainConfig,
-) -> Tuple[nn.Module, nn.Module, float]:
-    """
-    阶段 3: LLM + Flow 联合微调（可选，使用较小学习率）
-    
-    Args:
-        llm: LLM 模型
-        flow: Flow 模型
-        train_loader: 训练数据加载器
-        val_loader: 验证数据加载器
-        optimizer: 优化器
-        scheduler: 学习率调度器
-        cfg: 训练配置
-        
-    Returns:
-        (训练后的 LLM, 训练后的 Flow, 最佳验证损失)
-    """
-    print("\n" + "="*60)
-    print("阶段 3: LLM + Flow 联合微调")
-    print("="*60 + "\n")
-    
-    # 降低学习率
-    for param_group in optimizer.param_groups:
-        param_group['lr'] *= cfg.stage.joint_lr_scale
-    
-    # 解冻 LLM LoRA 层
-    for name, param in llm.named_parameters():
-        if "lora" in name.lower():
-            param.requires_grad = True
-    
-    best_val_loss = float('inf')
-    device = cfg.basic.device
-    
-    for epoch in range(cfg.stage.stage3_epochs):
-        llm.train()
-        flow.train()
-        
-        llm_loss_meter = AverageMeter("LLM Loss")
-        flow_loss_meter = AverageMeter("Flow Loss")
-        total_loss_meter = AverageMeter("Total Loss")
-        
-        pbar = tqdm(enumerate(train_loader), total=len(train_loader),
-                   desc=f"Joint Epoch {epoch+1}/{cfg.stage.stage3_epochs}")
-        
-        for step, batch in pbar:
-            # 数据移动到设备
-            prompt_tokens = batch['prompt_tokens'].to(device)
-            prompt_token_len = batch['prompt_token_len'].to(device)
-            target_tokens = batch['target_tokens'].to(device)
-            target_token_len = batch['target_token_len'].to(device)
-            prompt_mel = batch['prompt_mel'].to(device)
-            prompt_mel_len = batch['prompt_mel_len'].to(device)
-            target_mel = batch['target_mel'].to(device)
-            target_mel_len = batch['target_mel_len'].to(device)
-            speaker_embedding = batch['speaker_embedding'].to(device)
-            
-            # LLM 前向
-            llm_output = llm(prompt_tokens)
-            if hasattr(llm_output, 'logits'):
-                llm_output = llm_output.logits
-            llm_loss = compute_llm_loss(llm, llm_output, target_tokens, target_token_len)
-            
-            # Flow 前向
-            flow_output = flow.forward(
-                token=target_tokens,
-                token_len=target_token_len,
-                prompt_token=prompt_tokens,
-                prompt_token_len=prompt_token_len,
-                prompt_feat=prompt_mel.transpose(1, 2),
-                prompt_feat_len=prompt_mel_len,
-                embedding=speaker_embedding,
-                n_timesteps=cfg.model_flow.n_timesteps
-            )
-            flow_loss = compute_flow_loss(flow_output, target_mel, target_mel_len)
-            
-            # 总损失
-            total_loss = (cfg.loss.llm_weight * llm_loss + 
-                         cfg.loss.flow_weight * flow_loss)
-            
-            # 梯度累积
-            total_loss = total_loss / cfg.optim.accum_grad
-            total_loss.backward()
-            
-            if (step + 1) % cfg.optim.accum_grad == 0:
-                clip_grad_norm(list(llm.parameters()) + list(flow.parameters()), 
-                             cfg.optim.grad_clip)
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
-            
-            # 更新统计
-            llm_loss_meter.update(llm_loss.item())
-            flow_loss_meter.update(flow_loss.item())
-            total_loss_meter.update(total_loss.item() * cfg.optim.accum_grad)
-            
-            if (step + 1) % cfg.basic.log_interval == 0:
-                pbar.set_postfix({
-                    'llm': f"{llm_loss_meter.avg:.4f}",
-                    'flow': f"{flow_loss_meter.avg:.4f}",
-                    'total': f"{total_loss_meter.avg:.4f}"
-                })
-        
-        # 验证
-        val_loss = total_loss_meter.avg  # 简化，使用训练损失
-        is_best = val_loss < best_val_loss
-        if is_best:
-            best_val_loss = val_loss
-        
-        # 保存
-        save_ckpt(llm, optimizer, epoch, val_loss, cfg.save.ckpt_dir, "llm_joint", is_best=is_best)
-        save_ckpt(flow, optimizer, epoch, val_loss, cfg.save.ckpt_dir, "flow_joint", is_best=is_best)
-    
-    print(f"\n阶段 3 完成！最佳验证损失: {best_val_loss:.4f}\n")
-    return llm, flow, best_val_loss
-
-
-def validate_llm(
-    llm: nn.Module, 
-    val_loader: DataLoader, 
-    device: str
-) -> float:
-    """LLM 验证"""
-    llm.eval()
-    loss_meter = AverageMeter("Val LLM Loss")
-    
-    with torch.no_grad():
-        for batch in val_loader:
-            prompt_tokens = batch['prompt_tokens'].to(device)
-            target_tokens = batch['target_tokens'].to(device)
-            target_token_len = batch['target_token_len'].to(device)
-            
-            output_ids = llm(prompt_tokens)
-            if hasattr(output_ids, 'logits'):
-                output_ids = output_ids.logits
-            
-            loss = compute_llm_loss(llm, output_ids, target_tokens, target_token_len)
-            loss_meter.update(loss.item())
-    
-    return loss_meter.avg
-
-
-def validate_flow(
-    flow: nn.Module, 
-    llm: nn.Module,
-    val_loader: DataLoader, 
-    device: str,
-    cfg: TrainConfig
-) -> float:
-    """Flow 验证"""
-    flow.eval()
-    loss_meter = AverageMeter("Val Flow Loss")
-    
-    with torch.no_grad():
-        for batch in val_loader:
-            prompt_tokens = batch['prompt_tokens'].to(device)
-            prompt_token_len = batch['prompt_token_len'].to(device)
-            target_tokens = batch['target_tokens'].to(device)
-            target_token_len = batch['target_token_len'].to(device)
-            prompt_mel = batch['prompt_mel'].to(device)
-            prompt_mel_len = batch['prompt_mel_len'].to(device)
-            target_mel = batch['target_mel'].to(device)
-            target_mel_len = batch['target_mel_len'].to(device)
-            speaker_embedding = batch['speaker_embedding'].to(device)
-            
-            flow_output = flow.forward(
-                token=target_tokens,
-                token_len=target_token_len,
-                prompt_token=prompt_tokens,
-                prompt_token_len=prompt_token_len,
-                prompt_feat=prompt_mel.transpose(1, 2),
-                prompt_feat_len=prompt_mel_len,
-                embedding=speaker_embedding,
-                n_timesteps=cfg.model_flow.n_timesteps
-            )
-            
-            loss = compute_flow_loss(flow_output, target_mel, target_mel_len)
-            loss_meter.update(loss.item())
-    
-    return loss_meter.avg
-
-
-def train_llm_flow(cfg: TrainConfig):
-    """
-    主训练函数：根据 train_mode 选择训练 LLM 和/或 Flow
+def train_llm_flow(cfg):
+    """主训练函数
     
     Args:
         cfg: 训练配置
         
     Returns:
-        (llm, flow) 训练后的模型
+        (llm, flow): 训练后的模型
     """
     # 设置随机种子
     set_seed(cfg.basic.seed)
@@ -523,127 +371,58 @@ def train_llm_flow(cfg: TrainConfig):
     # 设置日志
     setup_logging(cfg.save.ckpt_dir)
     
-    logger.info("="*60)
+    logger.info("=" * 60)
     logger.info("Step-Audio-EditX LLM + Flow 微调训练")
     logger.info(f"训练模式: {cfg.basic.train_mode.upper()}")
-    logger.info("="*60)
+    logger.info("=" * 60)
     
     # 创建保存目录
     os.makedirs(cfg.save.ckpt_dir, exist_ok=True)
     
-    # 根据训练模式决定是否初始化模型
-    train_mode = cfg.basic.train_mode.lower()
-    
-    if train_mode not in ['llm', 'flow', 'both']:
-        raise ValueError(f"无效的训练模式: {train_mode}，必须是 'llm', 'flow' 或 'both'")
-    
-    # 准备模型
+    # 初始化模型
     logger.info("初始化模型...")
     llm, flow, cosy_model = prepare_models_for_training(cfg)
     
+    # 初始化 tokenizer
+    tokenizer = StepAudioTokenizer(
+        encoder_path=cfg.model_llm.model_path,
+        model_source=ModelSource.LOCAL
+    ).tokenizer  # 获取 Qwen tokenizer
+    
     # 构建数据加载器
     logger.info("构建数据加载器...")
-    train_loader = build_dataloader(
-        cfg.data.train_path,
-        cfg.data.batch_size,
-        cfg.data.sample_rate,
-        cfg.data.max_audio_len,
-        cfg.data.max_text_len,
-        cfg.model_llm.model_path,
-        cfg.data.num_workers,
-        train=True
-    )
+    train_loader = build_dataloader(cfg, tokenizer, train=True)
+    val_loader = build_dataloader(cfg, tokenizer, train=False)
     
-    val_loader = build_dataloader(
-        cfg.data.val_path,
-        cfg.data.batch_size,
-        cfg.data.sample_rate,
-        cfg.data.max_audio_len,
-        cfg.data.max_text_len,
-        cfg.model_llm.model_path,
-        cfg.data.num_workers,
-        train=False
-    )
+    # 根据训练模式选择
+    train_mode = cfg.basic.train_mode.lower()
     
-    # 根据训练模式初始化优化器
     if train_mode == 'llm':
         # 仅训练 LLM
-        optimizer = optim.AdamW(
-            llm.parameters(), 
-            lr=cfg.optim.lr_llm,
-            weight_decay=cfg.optim.weight_decay
-        )
+        optimizer = optim.AdamW(llm.parameters(), lr=cfg.optim.lr_llm, weight_decay=cfg.optim.weight_decay)
+        scheduler = WarmupLR(optimizer, cfg.optim.warmup_steps)
+        llm, _ = train_llm_only(llm, train_loader, val_loader, optimizer, scheduler, cfg)
+        
     elif train_mode == 'flow':
         # 仅训练 Flow
-        optimizer = optim.AdamW(
-            flow.parameters(),
-            lr=cfg.optim.lr_flow,
-            weight_decay=cfg.optim.weight_decay
-        )
-    else:  # both
-        # 训练两者
-        optimizer = optim.AdamW([
-            {"params": llm.parameters(), "lr": cfg.optim.lr_llm},
-            {"params": flow.parameters(), "lr": cfg.optim.lr_flow}
-        ], weight_decay=cfg.optim.weight_decay)
-    
-    # 学习率调度器
-    scheduler = WarmupLR(optimizer, cfg.optim.warmup_steps)
-    
-    # 根据训练模式执行相应的训练阶段
-    if train_mode == 'llm':
-        logger.info("\n训练模式: 仅 LLM (LoRA)\n")
-        llm, _ = train_stage1_llm(
-            llm, train_loader, val_loader,
-            optimizer, scheduler, cfg
-        )
-        logger.info("="*60)
-        logger.info("训练完成！")
-        logger.info(f"LLM checkpoint: {cfg.save.ckpt_dir}/llm_best.pt")
-        logger.info("="*60)
-        
-    elif train_mode == 'flow':
-        logger.info("\n训练模式: 仅 Flow (解码器)\n")
-        # 冻结 LLM，仅用于 token 生成
-        llm.eval()
-        for param in llm.parameters():
-            param.requires_grad = False
-        
-        flow, _ = train_stage2_flow(
-            flow, llm, train_loader, val_loader,
-            optimizer, scheduler, cfg,
-            start_epoch=0
-        )
-        logger.info("="*60)
-        logger.info("训练完成！")
-        logger.info(f"Flow checkpoint: {cfg.save.ckpt_dir}/flow_best.pt")
-        logger.info("="*60)
+        optimizer = optim.AdamW(flow.parameters(), lr=cfg.optim.lr_flow, weight_decay=cfg.optim.weight_decay)
+        scheduler = WarmupLR(optimizer, cfg.optim.warmup_steps)
+        flow, _ = train_flow_only(flow, llm, train_loader, val_loader, optimizer, scheduler, cfg)
         
     else:  # both
-        logger.info("\n训练模式: 分阶段训练 (LLM -> Flow -> 联合)\n")
-        # 阶段 1: 单独微调 LLM
-        llm, _ = train_stage1_llm(
-            llm, train_loader, val_loader,
-            optimizer, scheduler, cfg
-        )
+        # 分阶段训练
+        # Stage 1: LLM
+        optimizer_llm = optim.AdamW(llm.parameters(), lr=cfg.optim.lr_llm, weight_decay=cfg.optim.weight_decay)
+        scheduler_llm = WarmupLR(optimizer_llm, cfg.optim.warmup_steps)
+        llm, _ = train_llm_only(llm, train_loader, val_loader, optimizer_llm, scheduler_llm, cfg)
         
-        # 阶段 2: 单独微调 Flow
-        flow, _ = train_stage2_flow(
-            flow, llm, train_loader, val_loader,
-            optimizer, scheduler, cfg
-        )
-        
-        # 阶段 3: 联合微调（可选）
-        if cfg.stage.stage3_epochs > 0:
-            llm, flow, _ = train_stage3_joint(
-                llm, flow, train_loader, val_loader,
-                optimizer, scheduler, cfg
-            )
-        
-        logger.info("="*60)
-        logger.info("训练完成！")
-        logger.info(f"LLM checkpoint: {cfg.save.ckpt_dir}/llm_best.pt")
-        logger.info(f"Flow checkpoint: {cfg.save.ckpt_dir}/flow_best.pt")
-        logger.info("="*60)
+        # Stage 2: Flow
+        optimizer_flow = optim.AdamW(flow.parameters(), lr=cfg.optim.lr_flow, weight_decay=cfg.optim.weight_decay)
+        scheduler_flow = WarmupLR(optimizer_flow, cfg.optim.warmup_steps)
+        flow, _ = train_flow_only(flow, llm, train_loader, val_loader, optimizer_flow, scheduler_flow, cfg)
+    
+    logger.info("=" * 60)
+    logger.info("训练完成！")
+    logger.info("=" * 60)
     
     return llm, flow
