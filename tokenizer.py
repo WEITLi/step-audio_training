@@ -6,6 +6,7 @@ import os
 import numpy as np
 import torch
 import torchaudio
+import soundfile as sf
 import onnxruntime
 import whisper
 
@@ -33,8 +34,8 @@ class StepAudioTokenizer:
         # Load FunASR model - use unified loader to handle all modes
         try:
             self.funasr_model = model_loader.load_funasr_model(
-                encoder_path,
-                funasr_model_path,
+                repo_path=funasr_model_path,  # 使用完整路径作为 repo_path
+                model_path=funasr_model_path,  # 同样使用完整路径作为 model_path
                 source=model_source,
                 model_revision="main"
             )
@@ -44,8 +45,8 @@ class StepAudioTokenizer:
             self.funasr_model = AutoModel(model=funasr_model_path, model_revision="main")
 
         # Load other resource files (these are usually local files)
-        kms_path = os.path.join(self.funasr_model.repo_path, "linguistic_tokenizer.npy")
-        cosy_tokenizer_path = os.path.join(self.funasr_model.repo_path, "speech_tokenizer_v1.onnx")
+        kms_path = os.path.join(encoder_path, "linguistic_tokenizer.npy")
+        cosy_tokenizer_path = os.path.join(encoder_path, "speech_tokenizer_v1.onnx")
 
         if not os.path.exists(kms_path):
             raise FileNotFoundError(f"KMS file not found: {kms_path}")
@@ -54,7 +55,7 @@ class StepAudioTokenizer:
 
         self.kms = torch.tensor(np.load(kms_path))
 
-        providers = ["CUDAExecutionProvider"]
+        providers = ["CPUExecutionProvider"]  # 只使用 CPU
         session_option = onnxruntime.SessionOptions()
         session_option.graph_optimization_level = (
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -108,7 +109,9 @@ class StepAudioTokenizer:
 
     def get_vq02_code(self, audio, session_id=None, is_final=True):
         _tmp_wav = io.BytesIO()
-        torchaudio.save(_tmp_wav, audio, 16000, format="wav")
+        # Use soundfile instead of torchaudio.save (TorchCodec doesn't support BytesIO)
+        audio_np = audio.squeeze(0).cpu().numpy() if audio.dim() > 1 else audio.cpu().numpy()
+        sf.write(_tmp_wav, audio_np, 16000, format='WAV')
         _tmp_wav.seek(0)
 
         with self.vq02_lock:
@@ -121,7 +124,7 @@ class StepAudioTokenizer:
                 chunk_size=self.chunk_size,
                 encoder_chunk_look_back=self.encoder_chunk_look_back,
                 decoder_chunk_look_back=self.decoder_chunk_look_back,
-                device=0,
+                device="cpu",  # 强制使用 CPU
                 is_final=is_final,
                 cache=cache,
             )

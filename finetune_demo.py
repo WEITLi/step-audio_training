@@ -65,8 +65,9 @@ def main():
     print(f"  随机种子: {cfg.basic.seed}")
     print(f"  最大 epoch: {cfg.basic.max_epoch}")
     print(f"  LLM 模型路径: {cfg.model_llm.model_path}")
+    print(f"  Tokenizer 模型路径: {cfg.model_tokenizer.model_path}")
     print(f"  Flow 模型路径: {cfg.model_flow.model_path}")
-    print(f"  训练数据: {cfg.data.train_path}")
+    print(f"  训练数据: {cfg.data.train_data}")
     print(f"  保存目录: {cfg.save.ckpt_dir}")
     
     # 开始训练
@@ -95,7 +96,7 @@ def test_finetuned_model(cfg):
     
     # 初始化 tokenizer
     tokenizer = StepAudioTokenizer(
-        encoder_path=cfg.model_llm.model_path,
+        encoder_path=cfg.model_tokenizer.model_path,
         model_source=ModelSource.LOCAL
     )
     

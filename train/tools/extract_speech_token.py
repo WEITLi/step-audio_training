@@ -8,8 +8,14 @@ import argparse
 import logging
 import torch
 import torchaudio
+import sys
+import os
 from pathlib import Path
 from tqdm import tqdm
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
 from tokenizer import StepAudioTokenizer
 from model_loader import ModelSource
 
@@ -42,7 +48,7 @@ def load_wav_scp(wav_scp_path):
     return utt2wav
 
 
-def extract_tokens(tokenizer, audio_path, target_sr=24000):
+def extract_tokens(tokenizer, audio_path, target_sr=16000):
     """提取单个音频文件的 speech token
     
     Args:
@@ -61,28 +67,15 @@ def extract_tokens(tokenizer, audio_path, target_sr=24000):
         if waveform.shape[0] > 1:
             waveform = waveform.mean(dim=0, keepdim=True)
         
-        # 重采样
-        if sr != target_sr:
-            waveform = torchaudio.transforms.Resample(sr, target_sr)(waveform)
-        
-        # 归一化
-        max_val = waveform.abs().max()
-        if max_val > 1:
-            waveform = waveform / max_val
-        
         # 提取 token
-        # Step-Audio-Tokenizer 使用双 codebook (VQ02 + VQ06)
-        # 合并后的 token 范围: [0, 65536)
+        # StepAudioTokenizer 使用 wav2token 方法
         with torch.no_grad():
-            # 这里需要使用 Step-Audio-Tokenizer 的编码方法
-            # 具体实现参考 tokenizer.py 中的 encode_audio 方法
-            vq02_codes, vq06_codes = tokenizer.encode_audio(waveform, target_sr)
+            speech_tokens, vq02_codes, vq06_codes = tokenizer.wav2token(waveform, sr)
             
-            # 合并 VQ02 和 VQ06 codes
-            # CosyVoice 使用的格式是合并的 token
-            speech_token = tokenizer.merge_vq0206_codes(vq02_codes, vq06_codes)
+            # 转换为 tensor
+            speech_token = torch.tensor(speech_tokens, dtype=torch.long)
         
-        return speech_token.squeeze()
+        return speech_token
         
     except Exception as e:
         logger.error(f"Failed to extract tokens from {audio_path}: {e}")
@@ -114,8 +107,8 @@ def main():
     parser.add_argument(
         '--sample_rate',
         type=int,
-        default=24000,
-        help='Target sample rate (default: 24000)'
+        default=16000,
+        help='Target sample rate (default: 16000)'
     )
     parser.add_argument(
         '--model_source',
@@ -131,9 +124,13 @@ def main():
     
     model_source_map = {
         'local': ModelSource.LOCAL,
-        'hf': ModelSource.HF,
+        'hf': ModelSource.HUGGINGFACE,
         'modelscope': ModelSource.MODELSCOPE
     }
+    
+    # 设置环境变量强制使用 CPU
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
     
     tokenizer = StepAudioTokenizer(
         encoder_path=args.tokenizer_path,
@@ -171,11 +168,14 @@ def main():
     logger.info(f"Saved speech tokens to {args.output}")
     
     # 打印统计信息
-    token_lens = [len(tokens) for tokens in utt2speech_token.values()]
-    logger.info(f"Token length statistics:")
-    logger.info(f"  Min: {min(token_lens)}")
-    logger.info(f"  Max: {max(token_lens)}")
-    logger.info(f"  Mean: {sum(token_lens) / len(token_lens):.1f}")
+    if utt2speech_token:
+        token_lens = [len(tokens) for tokens in utt2speech_token.values()]
+        logger.info(f"Token length statistics:")
+        logger.info(f"  Min: {min(token_lens)}")
+        logger.info(f"  Max: {max(token_lens)}")
+        logger.info(f"  Mean: {sum(token_lens) / len(token_lens):.1f}")
+    else:
+        logger.warning("No tokens extracted - check audio files and tokenizer compatibility")
 
 
 if __name__ == '__main__':

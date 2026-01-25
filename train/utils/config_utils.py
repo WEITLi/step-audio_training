@@ -22,6 +22,12 @@ class LLMConfig:
 
 
 @dataclass
+class TokenizerConfig:
+    """Tokenizer 模型配置"""
+    model_path: str = "./pretrained_models/stepaudio_editx/Step-Audio-Tokenizer"
+
+
+@dataclass
 class FlowConfig:
     """Flow 模型配置"""
     model_path: str = "./pretrained_models/Step-Audio-EditX/CosyVoice-300M-25Hz"
@@ -109,6 +115,7 @@ class TrainConfig:
     """完整训练配置"""
     basic: BasicConfig = field(default_factory=BasicConfig)
     model_llm: LLMConfig = field(default_factory=LLMConfig)
+    model_tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     model_flow: FlowConfig = field(default_factory=FlowConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     data: DataConfig = field(default_factory=DataConfig)
@@ -156,6 +163,10 @@ def validate_config(config: Dict[str, Any]) -> None:
     if not os.path.exists(llm_path):
         raise FileNotFoundError(f"LLM 模型路径不存在: {llm_path}")
     
+    tokenizer_path = config.get('model', {}).get('tokenizer', {}).get('model_path', '')
+    if not os.path.exists(tokenizer_path):
+        raise FileNotFoundError(f"Tokenizer 模型路径不存在: {tokenizer_path}")
+    
     flow_path = config.get('model', {}).get('flow', {}).get('model_path', '')
     if not os.path.exists(flow_path):
         raise FileNotFoundError(f"Flow 模型路径不存在: {flow_path}")
@@ -171,12 +182,16 @@ def validate_config(config: Dict[str, Any]) -> None:
     
     # 校验学习率范围
     lr_llm = config.get('optim', {}).get('lr_llm', 0)
+    if isinstance(lr_llm, str):
+        lr_llm = float(lr_llm)
     if lr_llm > 1e-3:
-        raise ValueError(f"LLM 学习率过高: {lr_llm}，建议不超过 1e-3")
+        print(f"警告: LLM 学习率较高: {lr_llm}，建议不超过 1e-3")
     
     lr_flow = config.get('optim', {}).get('lr_flow', 0)
+    if isinstance(lr_flow, str):
+        lr_flow = float(lr_flow)
     if lr_flow > 1e-3:
-        raise ValueError(f"Flow 学习率过高: {lr_flow}，建议不超过 1e-3")
+        print(f"警告: Flow 学习率较高: {lr_flow}，建议不超过 1e-3")
     
     # 校验梯度裁剪阈值
     grad_clip = config.get('optim', {}).get('grad_clip', 0)
@@ -216,12 +231,32 @@ def load_and_validate_config(config_path: str) -> TrainConfig:
     if 'model' in raw_config:
         if 'llm' in raw_config['model']:
             config.model_llm = LLMConfig(**raw_config['model']['llm'])
+        if 'tokenizer' in raw_config['model']:
+            config.model_tokenizer = TokenizerConfig(**raw_config['model']['tokenizer'])
         if 'flow' in raw_config['model']:
             config.model_flow = FlowConfig(**raw_config['model']['flow'])
     
     # 解析 optim
     if 'optim' in raw_config:
-        config.optim = OptimConfig(**raw_config['optim'])
+        optim_data = raw_config['optim'].copy()
+        print(f"原始 optim 配置: {optim_data}")
+        
+        # 确保所有数值参数都是正确的类型
+        if 'lr_llm' in optim_data:
+            optim_data['lr_llm'] = float(optim_data['lr_llm'])
+            print(f"lr_llm 转换为: {optim_data['lr_llm']} (类型: {type(optim_data['lr_llm'])})")
+        if 'lr_flow' in optim_data:
+            optim_data['lr_flow'] = float(optim_data['lr_flow'])
+            print(f"lr_flow 转换为: {optim_data['lr_flow']} (类型: {type(optim_data['lr_flow'])})")
+        if 'weight_decay' in optim_data:
+            optim_data['weight_decay'] = float(optim_data['weight_decay'])
+        if 'grad_clip' in optim_data:
+            optim_data['grad_clip'] = float(optim_data['grad_clip'])
+        if 'warmup_steps' in optim_data:
+            optim_data['warmup_steps'] = int(optim_data['warmup_steps'])
+        if 'accum_grad' in optim_data:
+            optim_data['accum_grad'] = int(optim_data['accum_grad'])
+        config.optim = OptimConfig(**optim_data)
     
     # 解析 data
     if 'data' in raw_config:

@@ -8,6 +8,7 @@ import argparse
 import logging
 import torch
 import torchaudio
+import torchaudio.compliance.kaldi as kaldi
 import onnxruntime
 import numpy as np
 from pathlib import Path
@@ -79,20 +80,16 @@ def extract_embedding(onnx_session, audio_path, target_sr=16000):
         if sr != target_sr:
             waveform = torchaudio.transforms.Resample(sr, target_sr)(waveform)
         
-        # 归一化
-        max_val = waveform.abs().max()
-        if max_val > 0:
-            waveform = waveform / max_val
+        # 提取 MFCC 特征 (80-dim filter bank)
+        feat = kaldi.fbank(waveform, num_mel_bins=80, dither=0, sample_frequency=16000)
+        feat = feat - feat.mean(dim=0, keepdim=True)
         
-        # 准备输入
-        audio_np = waveform.squeeze().numpy().astype(np.float32)
-        
-        # ONNX 推理
-        inputs = {onnx_session.get_inputs()[0].name: audio_np[np.newaxis, :]}
+        # ONNX 推理 - 输入形状 [batch, time, features]
+        inputs = {onnx_session.get_inputs()[0].name: feat.unsqueeze(dim=0).cpu().numpy()}
         embedding = onnx_session.run(None, inputs)[0]
         
         # 返回 192-dim embedding
-        return embedding.squeeze()
+        return embedding.flatten()
         
     except Exception as e:
         logger.error(f"Failed to extract embedding from {audio_path}: {e}")
@@ -191,7 +188,10 @@ def main():
     logger.info(f"Statistics:")
     logger.info(f"  Total utterances: {len(utt2embedding)}")
     logger.info(f"  Total speakers: {len(spk2embedding)}")
-    logger.info(f"  Avg utts per speaker: {len(utt2embedding) / len(spk2embedding):.1f}")
+    if len(spk2embedding) > 0:
+        logger.info(f"  Avg utts per speaker: {len(utt2embedding) / len(spk2embedding):.1f}")
+    else:
+        logger.warning("  No speaker embeddings extracted - check audio files and model compatibility")
 
 
 if __name__ == '__main__':

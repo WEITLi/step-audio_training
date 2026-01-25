@@ -116,13 +116,53 @@ def compute_llm_loss(llm, batch, device):
     speech_token_len = batch['speech_token_len'].to(device)
     embedding = batch['embedding'].to(device)
     
-    # Forward pass
-    # TODO: 这里需要根据实际的 LLM forward 接口调整
-    # 假设 LLM 接受 (text_token, embedding) 并输出 logits
-    logits = llm(
-        input_ids=text_token,
-        attention_mask=(text_token != 0).long(),
-    ).logits
+    # 确保模型处于训练模式
+    llm.train()
+    
+    # Forward pass - 使用更安全的调用方式
+    try:
+        # 方法1：标准的 Transformers 调用
+        outputs = llm(
+            input_ids=text_token,
+            attention_mask=(text_token != 0).long(),
+            use_cache=False,
+            return_dict=True,
+            output_hidden_states=False,
+            output_attentions=False
+        )
+        logits = outputs.logits
+        print("✓ 使用标准 Transformers 调用成功")
+        
+    except Exception as e1:
+        print(f"⚠ 标准调用失败: {e1}")
+        try:
+            # 方法2：简化调用
+            outputs = llm(
+                input_ids=text_token,
+                attention_mask=(text_token != 0).long()
+            )
+            logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
+            print("✓ 使用简化调用成功")
+            
+        except Exception as e2:
+            print(f"⚠ 简化调用失败: {e2}")
+            try:
+                # 方法3：最基本调用
+                outputs = llm(text_token)
+                logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
+                print("✓ 使用基本调用成功")
+                
+            except Exception as e3:
+                print(f"❌ 所有调用方式都失败")
+                print(f"错误1: {e1}")
+                print(f"错误2: {e2}")
+                print(f"错误3: {e3}")
+                raise e3
+    
+    # 检查 logits 的形状
+    print(f"Logits shape: {logits.shape}")
+    print(f"Text token shape: {text_token.shape}")
+    print(f"Speech token shape: {speech_token.shape}")
     
     # 计算 cross-entropy loss
     loss_fct = nn.CrossEntropyLoss(ignore_index=0)
@@ -130,6 +170,9 @@ def compute_llm_loss(llm, batch, device):
     # 只计算有效 token 的损失
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = speech_token[..., 1:].contiguous()
+    
+    print(f"Shift logits shape: {shift_logits.shape}")
+    print(f"Shift labels shape: {shift_labels.shape}")
     
     loss = loss_fct(
         shift_logits.view(-1, shift_logits.size(-1)),
@@ -150,29 +193,84 @@ def compute_flow_loss(flow, batch, device):
     Returns:
         loss: MSE 损失
     """
+    # 确保模型处于训练模式
+    flow.train()
+    
     speech_token = batch['speech_token'].to(device)
     speech_token_len = batch['speech_token_len'].to(device)
     speech_feat = batch['speech_feat'].to(device)
     speech_feat_len = batch['speech_feat_len'].to(device)
     embedding = batch['embedding'].to(device)
     
-    # Forward pass
-    # 使用 Flow 模型的 forward 方法（已添加）
-    pred_feat = flow.forward(
-        token=speech_token,
-        token_len=speech_token_len,
-        prompt_token=speech_token[:, :10],  # dummy prompt
-        prompt_token_len=torch.full_like(speech_token_len, 10),
-        prompt_feat=speech_feat[:, :20],  # dummy prompt
-        prompt_feat_len=torch.full_like(speech_feat_len, 20),
-        embedding=embedding,
-        n_timesteps=10
-    )
+    # 调试信息：检查 speech token 的范围
+    print(f"原始 speech token shape: {speech_token.shape}")
+    print(f"原始 speech token min: {speech_token.min().item()}")
+    print(f"原始 speech token max: {speech_token.max().item()}")
+    print(f"原始 speech token dtype: {speech_token.dtype}")
     
-    # 计算 MSE loss
-    loss = nn.functional.mse_loss(pred_feat, speech_feat)
+    # 检查 Flow 模型的 embedding 层词汇表大小
+    vocab_size = None
+    if hasattr(flow, 'input_embedding'):
+        if hasattr(flow.input_embedding, 'embedding'):
+            vocab_size = flow.input_embedding.embedding.num_embeddings
+            print(f"Flow embedding vocab size: {vocab_size}")
+        elif hasattr(flow.input_embedding, 'num_embeddings'):
+            vocab_size = flow.input_embedding.num_embeddings
+            print(f"Flow embedding vocab size: {vocab_size}")
     
-    return loss
+    # 修复 speech token 的范围问题
+    # Step-Audio-Tokenizer 在 wav2token 中添加了偏移量：
+    # vq02: +65536, vq06: +65536+1024
+    # 我们需要减去这些偏移量以适配 Flow 模型
+    
+    # 根据 CosyVoice 的实现，需要减去 65536
+    speech_token_fixed = speech_token - 65536
+    
+    print(f"修正后 speech token min: {speech_token_fixed.min().item()}")
+    print(f"修正后 speech token max: {speech_token_fixed.max().item()}")
+    
+    # 进一步检查和修正范围
+    if vocab_size is not None:
+        # 确保 token 值在有效范围内 [0, vocab_size-1]
+        speech_token_fixed = torch.clamp(speech_token_fixed, min=0, max=vocab_size-1)
+        print(f"最终 speech token min: {speech_token_fixed.min().item()}")
+        print(f"最终 speech token max: {speech_token_fixed.max().item()}")
+    else:
+        # 如果无法确定词汇表大小，至少确保没有负值
+        speech_token_fixed = torch.clamp(speech_token_fixed, min=0)
+        print(f"最终 speech token min: {speech_token_fixed.min().item()}")
+        print(f"最终 speech token max: {speech_token_fixed.max().item()}")
+    
+    try:
+        # 计算正确的 prompt 长度
+        prompt_len = min(10, speech_token_len.min().item())
+        
+        # Forward pass - 现在直接返回损失
+        loss = flow.forward(
+            token=speech_token_fixed,
+            token_len=speech_token_len,
+            prompt_token=speech_token_fixed[:, :prompt_len],
+            prompt_token_len=torch.full_like(speech_token_len, prompt_len),
+            prompt_feat=speech_feat[:, :prompt_len*2],
+            prompt_feat_len=torch.full_like(speech_feat_len, prompt_len*2),
+            embedding=embedding,
+            n_timesteps=10
+        )
+        
+        print(f"Flow compute_loss 成功，损失值: {loss.item():.4f}")
+        print(f"损失 requires_grad: {loss.requires_grad}")
+        
+        return loss
+        
+    except Exception as e:
+        print(f"Flow forward 失败: {e}")
+        print(f"输入参数形状:")
+        print(f"  token: {speech_token_fixed.shape}")
+        print(f"  token_len: {speech_token_len.shape}")
+        print(f"  speech_feat: {speech_feat.shape}")
+        print(f"  speech_feat_len: {speech_feat_len.shape}")
+        print(f"  embedding: {embedding.shape}")
+        raise
 
 
 def validate(model, dataloader, compute_loss_fn, device, model_name):
@@ -200,7 +298,7 @@ def validate(model, dataloader, compute_loss_fn, device, model_name):
     return val_loss.avg
 
 
-def train_llm_only(llm, train_loader, val_loader, optimizer, scheduler, cfg):
+def train_llm_only(llm, train_loader, val_loader, optimizer, scheduler, cfg, grad_clip, accum_grad):
     """仅训练 LLM (LoRA)
     
     Args:
@@ -236,8 +334,8 @@ def train_llm_only(llm, train_loader, val_loader, optimizer, scheduler, cfg):
             loss.backward()
             
             # Gradient accumulation
-            if (batch_idx + 1) % cfg.optim.accum_grad == 0:
-                clip_grad_norm(llm.parameters(), cfg.optim.grad_clip)
+            if (batch_idx + 1) % accum_grad == 0:
+                clip_grad_norm(llm.parameters(), grad_clip)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
@@ -261,21 +359,21 @@ def train_llm_only(llm, train_loader, val_loader, optimizer, scheduler, cfg):
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             save_ckpt(
-                llm, optimizer, scheduler, epoch, best_val_loss,
-                os.path.join(cfg.save.ckpt_dir, "llm_best.pt")
+                llm, optimizer, epoch, best_val_loss,
+                cfg.save.ckpt_dir, "llm", scheduler, is_best=True
             )
             logger.info(f"保存最佳 LLM checkpoint (val_loss={val_loss:.4f})")
         
         if (epoch + 1) % cfg.save.save_interval == 0:
             save_ckpt(
-                llm, optimizer, scheduler, epoch, best_val_loss,
-                os.path.join(cfg.save.ckpt_dir, f"llm_epoch_{epoch+1}.pt")
+                llm, optimizer, epoch, best_val_loss,
+                cfg.save.ckpt_dir, "llm", scheduler, is_best=False
             )
     
     return llm, best_val_loss
 
 
-def train_flow_only(flow, llm, train_loader, val_loader, optimizer, scheduler, cfg):
+def train_flow_only(flow, llm, train_loader, val_loader, optimizer, scheduler, cfg, grad_clip, accum_grad):
     """仅训练 Flow (解码器)
     
     Args:
@@ -307,18 +405,33 @@ def train_flow_only(flow, llm, train_loader, val_loader, optimizer, scheduler, c
         flow.train()
         train_loss = AverageMeter()
         
+        # 简单检查模型参数状态
+        trainable_params = sum(p.numel() for p in flow.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in flow.parameters())
+        
+        print(f"Flow 模型参数统计: {trainable_params:,}/{total_params:,} ({trainable_params/total_params*100:.1f}% 可训练)")
+        
+        if trainable_params == 0:
+            print("❌ 错误：没有可训练的参数！")
+            break
+        
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.stage.stage2_epochs}")
         
         for batch_idx, batch in enumerate(pbar):
             # Forward
             loss = compute_flow_loss(flow, batch, device)
             
+            # 简单检查损失梯度状态
+            if not loss.requires_grad:
+                print(f"⚠ Batch {batch_idx}: 损失不需要梯度，跳过")
+                continue
+            
             # Backward
             loss.backward()
             
             # Gradient accumulation
-            if (batch_idx + 1) % cfg.optim.accum_grad == 0:
-                clip_grad_norm(flow.parameters(), cfg.optim.grad_clip)
+            if (batch_idx + 1) % accum_grad == 0:
+                clip_grad_norm(flow.parameters(), grad_clip)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
@@ -342,15 +455,15 @@ def train_flow_only(flow, llm, train_loader, val_loader, optimizer, scheduler, c
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             save_ckpt(
-                flow, optimizer, scheduler, epoch, best_val_loss,
-                os.path.join(cfg.save.ckpt_dir, "flow_best.pt")
+                flow, optimizer, epoch, best_val_loss,
+                cfg.save.ckpt_dir, "flow", scheduler, is_best=True
             )
             logger.info(f"保存最佳 Flow checkpoint (val_loss={val_loss:.4f})")
         
         if (epoch + 1) % cfg.save.save_interval == 0:
             save_ckpt(
-                flow, optimizer, scheduler, epoch, best_val_loss,
-                os.path.join(cfg.save.ckpt_dir, f"flow_epoch_{epoch+1}.pt")
+                flow, optimizer, epoch, best_val_loss,
+                cfg.save.ckpt_dir, "flow", scheduler, is_best=False
             )
     
     return flow, best_val_loss
@@ -381,45 +494,64 @@ def train_llm_flow(cfg):
     
     # 初始化模型
     logger.info("初始化模型...")
-    llm, flow, cosy_model = prepare_models_for_training(cfg)
-    
-    # 初始化 tokenizer
-    tokenizer = StepAudioTokenizer(
-        encoder_path=cfg.model_llm.model_path,
-        model_source=ModelSource.LOCAL
-    ).tokenizer  # 获取 Qwen tokenizer
+    llm, flow, cosy_model, text_tokenizer = prepare_models_for_training(cfg)
     
     # 构建数据加载器
     logger.info("构建数据加载器...")
-    train_loader = build_dataloader(cfg, tokenizer, train=True)
-    val_loader = build_dataloader(cfg, tokenizer, train=False)
+    train_loader = build_dataloader(cfg, text_tokenizer, train=True)
+    val_loader = build_dataloader(cfg, text_tokenizer, train=False)
     
     # 根据训练模式选择
     train_mode = cfg.basic.train_mode.lower()
     
+    # 预先转换所有数值参数以避免类型错误
+    try:
+        lr_llm = float(cfg.optim.lr_llm)
+        lr_flow = float(cfg.optim.lr_flow)
+        weight_decay = float(cfg.optim.weight_decay)
+        grad_clip = float(cfg.optim.grad_clip)
+        warmup_steps = int(cfg.optim.warmup_steps)
+        accum_grad = int(cfg.optim.accum_grad)
+        
+        logger.info(f"优化器参数:")
+        logger.info(f"  lr_llm: {lr_llm} (类型: {type(lr_llm)})")
+        logger.info(f"  lr_flow: {lr_flow} (类型: {type(lr_flow)})")
+        logger.info(f"  weight_decay: {weight_decay} (类型: {type(weight_decay)})")
+        logger.info(f"  grad_clip: {grad_clip} (类型: {type(grad_clip)})")
+        logger.info(f"  warmup_steps: {warmup_steps} (类型: {type(warmup_steps)})")
+        logger.info(f"  accum_grad: {accum_grad} (类型: {type(accum_grad)})")
+        
+    except Exception as e:
+        logger.error(f"参数类型转换失败: {e}")
+        raise
+    
     if train_mode == 'llm':
         # 仅训练 LLM
-        optimizer = optim.AdamW(llm.parameters(), lr=cfg.optim.lr_llm, weight_decay=cfg.optim.weight_decay)
-        scheduler = WarmupLR(optimizer, cfg.optim.warmup_steps)
-        llm, _ = train_llm_only(llm, train_loader, val_loader, optimizer, scheduler, cfg)
+        logger.info(f"初始化 LLM 优化器，学习率: {lr_llm}")
+        optimizer = optim.AdamW(llm.parameters(), lr=lr_llm, weight_decay=weight_decay)
+        scheduler = WarmupLR(optimizer, warmup_steps)
+        llm, _ = train_llm_only(llm, train_loader, val_loader, optimizer, scheduler, cfg, grad_clip, accum_grad)
         
     elif train_mode == 'flow':
         # 仅训练 Flow
-        optimizer = optim.AdamW(flow.parameters(), lr=cfg.optim.lr_flow, weight_decay=cfg.optim.weight_decay)
-        scheduler = WarmupLR(optimizer, cfg.optim.warmup_steps)
-        flow, _ = train_flow_only(flow, llm, train_loader, val_loader, optimizer, scheduler, cfg)
+        logger.info(f"初始化 Flow 优化器，学习率: {lr_flow}")
+        optimizer = optim.AdamW(flow.parameters(), lr=lr_flow, weight_decay=weight_decay)
+        scheduler = WarmupLR(optimizer, warmup_steps)
+        flow, _ = train_flow_only(flow, llm, train_loader, val_loader, optimizer, scheduler, cfg, grad_clip, accum_grad)
         
     else:  # both
         # 分阶段训练
         # Stage 1: LLM
-        optimizer_llm = optim.AdamW(llm.parameters(), lr=cfg.optim.lr_llm, weight_decay=cfg.optim.weight_decay)
-        scheduler_llm = WarmupLR(optimizer_llm, cfg.optim.warmup_steps)
-        llm, _ = train_llm_only(llm, train_loader, val_loader, optimizer_llm, scheduler_llm, cfg)
+        logger.info(f"初始化 LLM 优化器，学习率: {lr_llm}")
+        optimizer_llm = optim.AdamW(llm.parameters(), lr=lr_llm, weight_decay=weight_decay)
+        scheduler_llm = WarmupLR(optimizer_llm, warmup_steps)
+        llm, _ = train_llm_only(llm, train_loader, val_loader, optimizer_llm, scheduler_llm, cfg, grad_clip, accum_grad)
         
         # Stage 2: Flow
-        optimizer_flow = optim.AdamW(flow.parameters(), lr=cfg.optim.lr_flow, weight_decay=cfg.optim.weight_decay)
-        scheduler_flow = WarmupLR(optimizer_flow, cfg.optim.warmup_steps)
-        flow, _ = train_flow_only(flow, llm, train_loader, val_loader, optimizer_flow, scheduler_flow, cfg)
+        logger.info(f"初始化 Flow 优化器，学习率: {lr_flow}")
+        optimizer_flow = optim.AdamW(flow.parameters(), lr=lr_flow, weight_decay=weight_decay)
+        scheduler_flow = WarmupLR(optimizer_flow, warmup_steps)
+        flow, _ = train_flow_only(flow, llm, train_loader, val_loader, optimizer_flow, scheduler_flow, cfg, grad_clip, accum_grad)
     
     logger.info("=" * 60)
     logger.info("训练完成！")

@@ -1,7 +1,7 @@
 # 基础配置
 basic:
   seed: 42
-  device: "cuda"
+  device: "cpu"  # 改为 CPU 以兼容 GTX 1080 Ti
   max_epoch: 50
   log_interval: 50
   val_interval: 1
@@ -10,7 +10,7 @@ basic:
 # 模型配置
 model:
   llm:
-    model_path: "./pretrained_models/Step-Audio-EditX"
+    model_path: "./pretrained_models/stepaudio_editx/Step-Audio-EditX"
     lora: True
     lora_r: 8
     lora_alpha: 32
@@ -18,16 +18,19 @@ model:
     lora_target_modules: ["q_proj", "v_proj", "k_proj"]
     freeze_backbone: True
   
+  tokenizer:
+    model_path: "./pretrained_models/stepaudio_editx/Step-Audio-Tokenizer"
+  
   flow:
-    model_path: "./pretrained_models/Step-Audio-EditX/CosyVoice-300M-25Hz"
-    freeze_encoder: True
-    freeze_vocoder: True
+    model_path: "./pretrained_models/stepaudio_editx/Step-Audio-EditX/CosyVoice-300M-25Hz"
+    freeze_encoder: False  # 改为 False，全量微调
+    freeze_vocoder: False  # 改为 False，全量微调
     n_timesteps: 10
 
 # 优化器配置
 optim:
-  lr_llm: 1e-4
-  lr_flow: 1e-5
+  lr_llm: 1e-4  # 1e-4
+  lr_flow: 1e-5  # 1e-5
   warmup_steps: 3000
   weight_decay: 0.01
   grad_clip: 5.0
@@ -35,9 +38,9 @@ optim:
 
 # 数据配置
 data:
-  train_data: "./data/train.data.list"  # parquet 文件列表
-  cv_data: "./data/dev.data.list"
-  sample_rate: 24000
+  train_data: "./data/raw/parquet/data.list"  # parquet 文件列表
+  cv_data: "./data/raw/parquet/data.list"
+  sample_rate: 16000
   token_mel_ratio: 2  # token 和 mel 的比例 (CosyVoice 使用 2)
   
   # 数据过滤参数

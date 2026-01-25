@@ -242,7 +242,13 @@ class AutoModel:
         kwargs = self.kwargs if kwargs is None else kwargs
         kwargs.update(cfg)
         model = self.model if model is None else model
-        model = model.cuda()
+        
+        # 根据 device 参数决定使用 CPU 还是 GPU
+        device = kwargs.get("device", "cuda")
+        if device == "cpu" or not torch.cuda.is_available():
+            model = model.cpu()
+        else:
+            model = model.cuda()
         model.eval()
 
         batch_size = kwargs.get("batch_size", 1)
@@ -545,7 +551,13 @@ class AutoModel:
         kwargs = self.kwargs if kwargs is None else kwargs
         kwargs.update(cfg)
         model = self.model if model is None else model
-        model = model.cuda()
+        
+        # 根据 device 参数决定使用 CPU 还是 GPU
+        device = kwargs.get("device", "cuda")
+        if device == "cpu" or not torch.cuda.is_available():
+            model = model.cpu()
+        else:
+            model = model.cuda()
         model.eval()
 
         batch_size = kwargs.get("batch_size", 1)

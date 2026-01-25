@@ -187,7 +187,7 @@ if [ "$SKIP_EMBEDDING" = false ]; then
         python train/tools/extract_embedding.py \
             --wav_scp "${OUTPUT_DIR}/wav.scp" \
             --utt2spk "${OUTPUT_DIR}/utt2spk" \
-            --onnx_path "${PRETRAIN_DIR}/Step-Audio-EditX/CosyVoice-300M-25Hz/campplus.onnx" \
+            --onnx_path "${PRETRAIN_DIR}/stepaudio_editx/Step-Audio-EditX/CosyVoice-300M-25Hz/campplus.onnx" \
             --output_dir "${OUTPUT_DIR}"
         echo "✓ Speaker embedding 提取完成"
     fi
@@ -208,7 +208,7 @@ if [ "$SKIP_TOKEN" = false ]; then
     else
         python train/tools/extract_speech_token.py \
             --wav_scp "${OUTPUT_DIR}/wav.scp" \
-            --tokenizer_path "${PRETRAIN_DIR}/Step-Audio-Tokenizer" \
+            --tokenizer_path "${PRETRAIN_DIR}/stepaudio_editx/Step-Audio-Tokenizer" \
             --output "${OUTPUT_DIR}/utt2speech_token.pt" \
             --model_source local
         echo "✓ Speech token 提取完成"

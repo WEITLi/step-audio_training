@@ -24,16 +24,62 @@ from stepvocoder.cosyvoice2.utils.mask import make_pad_mask
 Inference wrapper
 """
 class CausalConditionalCFM(torch.nn.Module):
-    def __init__(self, estimator: DiT, inference_cfg_rate:float=0.7):
+    def __init__(self, estimator: DiT, inference_cfg_rate:float=0.7, training_cfg_rate:float=0.2, sigma_min:float=1e-6):
         super().__init__()
         self.estimator = estimator
         self.inference_cfg_rate = inference_cfg_rate
+        self.training_cfg_rate = training_cfg_rate
+        self.sigma_min = sigma_min
         self.out_channels = estimator.out_channels
          # a maximum of 600s
         self.register_buffer('rand_noise', torch.randn([1, self.out_channels, 50 * 600]), persistent=False)
 
         self.register_buffer('cnn_cache_buffer', torch.zeros(16, 16, 2, 1024, 2), persistent=False)
         self.register_buffer('att_cache_buffer', torch.zeros(16, 16, 2, 8, 1000, 128), persistent=False)
+
+    def compute_loss(self, x1, mask, mu, spks=None, cond=None, streaming=False):
+        """Computes diffusion loss (训练用)
+
+        Args:
+            x1 (torch.Tensor): Target
+                shape: (batch_size, n_feats, mel_timesteps)
+            mask (torch.Tensor): target mask
+                shape: (batch_size, 1, mel_timesteps)
+            mu (torch.Tensor): output of encoder
+                shape: (batch_size, n_feats, mel_timesteps)
+            spks (torch.Tensor, optional): speaker embedding. Defaults to None.
+                shape: (batch_size, spk_emb_dim)
+            cond: condition features
+            streaming: whether in streaming mode
+
+        Returns:
+            loss: conditional flow matching loss
+            y: conditional flow
+                shape: (batch_size, n_feats, mel_timesteps)
+        """
+        b, _, t = mu.shape
+
+        # random timestep
+        t_rand = torch.rand([b, 1, 1], device=mu.device, dtype=mu.dtype)
+        # cosine scheduling
+        t_rand = 1 - torch.cos(t_rand * 0.5 * torch.pi)
+        
+        # sample noise p(x_0)
+        z = torch.randn_like(x1)
+
+        y = (1 - (1 - self.sigma_min) * t_rand) * z + t_rand * x1
+        u = x1 - (1 - self.sigma_min) * z
+
+        # during training, we randomly drop condition to trade off mode coverage and sample fidelity
+        if self.training_cfg_rate > 0:
+            cfg_mask = torch.rand(b, device=x1.device) > self.training_cfg_rate
+            mu = mu * cfg_mask.view(-1, 1, 1)
+            spks = spks * cfg_mask.view(-1, 1)
+            cond = cond * cfg_mask.view(-1, 1, 1)
+
+        pred = self.estimator(y, mask, mu, t_rand.squeeze(), spks, cond, streaming=streaming)
+        loss = F.mse_loss(pred * mask, u * mask, reduction="sum") / (torch.sum(mask) * u.shape[1])
+        return loss, y
 
     def scatter_cuda_graph(self, enable_cuda_graph: bool):
         if enable_cuda_graph:
@@ -88,6 +134,14 @@ class CausalConditionalCFM(torch.nn.Module):
 
     @torch.inference_mode()
     def forward(self, mu, mask, spks, cond, n_timesteps=10, temperature=1.0):
+        z = self.rand_noise[:, :, :mu.size(2)] * temperature
+        t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
+        # cosine scheduling
+        t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
+        return self.solve_euler(z, t_span, mu, mask, spks, cond)
+
+    def forward_train(self, mu, mask, spks, cond, n_timesteps=10, temperature=1.0):
+        """训练模式的 forward，支持梯度计算"""
         z = self.rand_noise[:, :, :mu.size(2)] * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         # cosine scheduling

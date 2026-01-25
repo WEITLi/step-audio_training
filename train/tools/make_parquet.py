@@ -178,7 +178,7 @@ def main():
         end_idx = min((i + 1) * args.num_utts_per_parquet, len(utts))
         utt_chunk = utts[start_idx:end_idx]
         
-        parquet_path = des_dir / f'parquet_{i:09d}.tar'
+        parquet_path = des_dir / f'parquet_{i:09d}.parquet'
         
         num_samples = create_parquet_chunk(
             utt_chunk, utt2wav, utt2text, utt2spk,

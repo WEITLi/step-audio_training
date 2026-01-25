@@ -189,17 +189,18 @@ def tokenize(data, tokenizer, mode='train'):
     
     Args:
         data: Iterable[样本]
-        tokenizer: Qwen tokenizer
+        tokenizer: Qwen tokenizer (Transformers tokenizer)
         
     Yields:
         添加了 text_token 的样本
     """
     for sample in data:
         assert 'text' in sample
-        # 使用 Qwen tokenizer 进行 tokenization
+        # 使用 Transformers tokenizer 进行 tokenization
+        # 不使用 allowed_special 参数，因为 Transformers tokenizer 不支持
         sample['text_token'] = tokenizer.encode(
             sample['text'],
-            allowed_special='all'
+            add_special_tokens=False  # 使用 Transformers 的标准参数
         )
         yield sample
 
